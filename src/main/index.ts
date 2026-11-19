@@ -5,6 +5,11 @@ import icon from '../../resources/icon.png?asset'
 import { registerIpc } from './ipc'
 import { getSelectedSourceId } from './recording'
 
+// Keep rendering/recording alive while the window is minimized or covered.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -12,7 +17,7 @@ function createWindow(): void {
     height: 670,
     minWidth: 760,
     minHeight: 560,
-    title: "Premium Recording",
+    title: 'Premium Recording',
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -20,7 +25,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false
     }
   })
 

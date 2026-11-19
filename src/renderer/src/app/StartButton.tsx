@@ -102,7 +102,7 @@ export const StartButton = memo(function StartButton() {
               <Pause className="size-4" /> Pause
             </button>
           )}
-          <button type="button" disabled={status === 'stopping'} onClick={stop} className="flex h-10 items-center justify-center gap-1 rounded-lg border border-[var(--border)] text-sm disabled:text-[var(--muted)]">
+          <button type="button" disabled={status === 'stopping' || status === 'starting'} onClick={stop} className="flex h-10 items-center justify-center gap-1 rounded-lg border border-[var(--border)] text-sm disabled:text-[var(--muted)]">
             <Square className="size-4" /> Stop
           </button>
           <div className="flex h-10 items-center justify-center text-xs text-[var(--muted)]">{timer}</div>

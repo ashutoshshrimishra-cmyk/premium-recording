@@ -40,8 +40,14 @@ export const getSettingsOutputSchema = settingsSchema
 export const setSettingsInputSchema = settingsSchema
 export const setSettingsOutputSchema = settingsSchema
 
+export const recordingSelectSourceInputSchema = z.object({
+  sourceId: z.string().regex(/^screen:/)
+})
+export const recordingSelectSourceOutputSchema = z.boolean()
+
 export const recordingStartInputSchema = z.object({
   sourceId: z.string().regex(/^screen:/),
+  mimeType: z.string().min(1),
   fps: z.number().int().min(1).max(60),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
@@ -49,11 +55,18 @@ export const recordingStartInputSchema = z.object({
 })
 export const recordingStartOutputSchema = z.object({ filePath: z.string().min(1) })
 
-export const recordingChunkInputSchema = z.instanceof(ArrayBuffer)
+export const recordingChunkInputSchema = z.custom<ArrayBuffer | ArrayBufferView>(
+  (value) =>
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    Object.prototype.toString.call(value) === '[object ArrayBuffer]',
+  'Expected binary chunk data'
+)
 export const recordingChunkOutputSchema = z.boolean()
 
 export const recordingStopInputSchema = z.object({
-  mimeType: z.string().min(1)
+  mimeType: z.string().min(1),
+  discard: z.boolean().optional()
 })
 export const recordingStopOutputSchema = z.object({ filePath: z.string().min(1) })
 
@@ -68,6 +81,7 @@ export type GetSettingsInput = z.infer<typeof getSettingsInputSchema>
 export type GetSettingsOutput = z.infer<typeof getSettingsOutputSchema>
 export type SetSettingsInput = z.infer<typeof setSettingsInputSchema>
 export type SetSettingsOutput = z.infer<typeof setSettingsOutputSchema>
+export type RecordingSelectSourceInput = z.infer<typeof recordingSelectSourceInputSchema>
 export type RecordingStartInput = z.infer<typeof recordingStartInputSchema>
 export type RecordingStartOutput = z.infer<typeof recordingStartOutputSchema>
 export type RecordingChunkInput = z.infer<typeof recordingChunkInputSchema>

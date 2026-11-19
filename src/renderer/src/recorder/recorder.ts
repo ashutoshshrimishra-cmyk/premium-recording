@@ -22,8 +22,8 @@ const MIME_TYPES = [
 export class ScreenRecorder {
   private stream?: MediaStream
   private mediaRecorder?: MediaRecorder
-  private animationId = 0
   private stopped = false
+  private fileStarted = false
   private frameTimes: number[] = []
   private chunkWriter?: RecordingChunkWriter
 
@@ -37,23 +37,19 @@ export class ScreenRecorder {
     saveDir: string
   }): Promise<void> {
     this.stopped = false
+    this.fileStarted = false
     this.callbacks.onStatus('starting')
     this.chunkWriter = new RecordingChunkWriter(
       (chunk) => window.api.recordingChunk(chunk),
       (error) => this.callbacks.onError(`Chunk write failed: ${error.message}`)
     )
 
-    await window.api.recordingStart({
-      sourceId: options.sourceId,
-      fps: options.fps,
-      width: options.width,
-      height: options.height,
-      saveDir: options.saveDir
-    })
-
-    let permissionStream: MediaStream
+    // 1) Capture FIRST, while the click's user activation is still valid.
+    //    No file is created yet, so a failed capture can never leave a 0-byte file.
+    await window.api.recordingSelectSource({ sourceId: options.sourceId })
+    let stream: MediaStream
     try {
-      permissionStream = await navigator.mediaDevices.getDisplayMedia({
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           frameRate: { ideal: options.fps, max: options.fps },
           width: { ideal: options.width },
@@ -62,76 +58,82 @@ export class ScreenRecorder {
         audio: false
       } as MediaStreamConstraints)
     } catch (error) {
-      await window.api.recordingStop({ mimeType: 'video/mp4' }).catch(() => undefined)
-      const message = error instanceof DOMException && error.name === 'NotAllowedError'
-        ? 'Screen permission was denied'
-        : error instanceof Error
-          ? `Could not capture the screen: ${error.message}`
-          : 'Could not capture the screen'
-      throw new Error(message)
+      const name = error instanceof DOMException ? error.name : ''
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        name === 'NotAllowedError'
+          ? `Screen permission was denied (${detail})`
+          : `Could not capture the screen: ${name} ${detail}`.trim()
+      )
     }
-
-    const track = permissionStream.getVideoTracks()[0]
-    if (!track) {
-      permissionStream.getTracks().forEach((item) => item.stop())
-      await window.api.recordingStop({ mimeType: 'video/mp4' }).catch(() => undefined)
-      throw new Error('No source selected')
-    }
-
-    this.stream = permissionStream
-    const width = options.width
-    const height = options.height
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    const context = canvas.getContext('2d')
-    if (!context) {
+    this.stream = stream
+    if (this.stopped) {
       this.stopTracks()
-      await window.api.recordingStop({ mimeType: 'video/mp4' }).catch(() => undefined)
-      throw new Error('Could not create the recording canvas')
+      throw new Error('Recording was cancelled')
     }
 
-    const video = document.createElement('video')
-    video.muted = true
-    video.srcObject = permissionStream
-    await video.play()
-    const draw = (): void => {
-      if (this.stopped) return
-      context.drawImage(video, 0, 0, width, height)
-      this.animationId = requestAnimationFrame(draw)
+    const track = stream.getVideoTracks()[0]
+    if (!track) {
+      this.stopTracks()
+      throw new Error('No video track was returned by the screen capture')
     }
-    this.animationId = requestAnimationFrame(draw)
 
-    const drawStream = canvas.captureStream(options.fps)
     const mimeType = MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type))
     if (!mimeType) {
       this.stopTracks()
-      await window.api.recordingStop({ mimeType: 'video/mp4' }).catch(() => undefined)
-      throw new Error('This browser has no supported recording format')
+      throw new Error('This app has no supported recording format')
     }
-
     this.callbacks.onMimeType(mimeType)
-    this.mediaRecorder = new MediaRecorder(drawStream, { mimeType })
-    this.mediaRecorder.ondataavailable = (event): void => {
-      this.chunkWriter?.enqueue(event.data)
-    }
-    this.mediaRecorder.onerror = (event): void => {
-      this.callbacks.onError(`MediaRecorder error: ${String(event.error?.message || 'unknown error')}`)
-    }
-    this.mediaRecorder.onstop = (): void => {
-      void this.finishStop(mimeType)
-    }
 
-    track.onended = (): void => {
-      if (!this.stopped) {
-        this.callbacks.onError('Screen capture stream ended')
-        void this.stop()
+    // 2) Only now create the file (this also minimizes our window).
+    try {
+      await window.api.recordingStart({
+        sourceId: options.sourceId,
+        mimeType,
+        fps: options.fps,
+        width: options.width,
+        height: options.height,
+        saveDir: options.saveDir
+      })
+      this.fileStarted = true
+      if (this.stopped) throw new Error('Recording was cancelled')
+
+      // 3) Record the captured stream directly: no canvas, no animation-frame
+      //    dependency, so it keeps working while our window is minimized.
+      const bitrate = Math.min(40_000_000, Math.round(options.width * options.height * options.fps * 0.08))
+      this.mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitrate })
+
+      this.mediaRecorder.ondataavailable = (event): void => {
+        this.chunkWriter?.enqueue(event.data)
       }
-    }
+      this.mediaRecorder.onerror = (event): void => {
+        this.callbacks.onError(`MediaRecorder error: ${String(event.error?.message || 'unknown error')}`)
+      }
+      this.mediaRecorder.onstop = (): void => {
+        void this.finishStop(mimeType)
+      }
+      track.onended = (): void => {
+        if (!this.stopped) {
+          this.callbacks.onError('Screen capture stream ended')
+          void this.stop()
+        }
+      }
 
-    this.measureFrames(video as VideoFrameCallbackVideo)
-    this.mediaRecorder.start(1000)
-    this.callbacks.onStatus('recording')
+      // FPS measurement only (does not feed the recording).
+      const video = document.createElement('video')
+      video.muted = true
+      video.srcObject = stream
+      void video.play().then(() => this.measureFrames(video as VideoFrameCallbackVideo)).catch(() => undefined)
+
+      this.mediaRecorder.start(1000)
+      this.callbacks.onStatus('recording')
+    } catch (error) {
+      this.stopTracks()
+      if (this.fileStarted) {
+        await window.api.recordingStop({ mimeType, discard: true }).catch(() => undefined)
+      }
+      throw error instanceof Error ? error : new Error('Could not start recording')
+    }
   }
 
   pause(): void {
@@ -151,7 +153,6 @@ export class ScreenRecorder {
   async stop(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
-    cancelAnimationFrame(this.animationId)
     this.callbacks.onStatus('stopping')
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       this.mediaRecorder.stop()

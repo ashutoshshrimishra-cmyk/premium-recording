@@ -1,10 +1,13 @@
 import {
+  app,
+  BrowserWindow,
   desktopCapturer,
   dialog,
   ipcMain,
   screen,
   type IpcMainInvokeEvent
 } from 'electron'
+import { isAbsolute, join } from 'node:path'
 import Store from 'electron-store'
 import {
   getSourcesInputSchema,
@@ -17,6 +20,8 @@ import {
   getSettingsOutputSchema,
   setSettingsInputSchema,
   setSettingsOutputSchema,
+  recordingSelectSourceInputSchema,
+  recordingSelectSourceOutputSchema,
   recordingStartInputSchema,
   recordingStartOutputSchema,
   recordingChunkInputSchema,
@@ -33,12 +38,16 @@ import {
   stopRecordingFile
 } from '../recording'
 
-const settingsDefaults: Settings = {
-  saveDir: 'Videos/MyRecorder',
-  fps: 30,
-  resolution: '1080p',
-  noiseSuppression: true
+function getSettingsDefaults(): Settings {
+  return {
+    saveDir: join(app.getPath('videos'), 'MyRecorder'),
+    fps: 30,
+    resolution: '1080p',
+    noiseSuppression: true
+  }
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 function isFromOwnApp(event: IpcMainInvokeEvent): boolean {
   const frameUrl = event.senderFrame?.url
@@ -63,6 +72,7 @@ function validateSender(event: IpcMainInvokeEvent): void {
 }
 
 export function registerIpc(): void {
+  const settingsDefaults = getSettingsDefaults()
   const store = new Store<Settings>({
     name: 'settings',
     defaults: settingsDefaults
@@ -123,7 +133,10 @@ export function registerIpc(): void {
     getSettingsInputSchema.parse(input)
 
     const result: Settings = {
-      saveDir: store.get('saveDir', settingsDefaults.saveDir),
+      // A relative path (old default 'Videos/MyRecorder') would resolve against the process cwd.
+      saveDir: ((saved: string): string => (isAbsolute(saved) ? saved : settingsDefaults.saveDir))(
+        store.get('saveDir', settingsDefaults.saveDir)
+      ),
       fps: store.get('fps', settingsDefaults.fps),
       resolution: store.get('resolution', settingsDefaults.resolution),
       noiseSuppression: store.get('noiseSuppression', settingsDefaults.noiseSuppression)
@@ -139,6 +152,13 @@ export function registerIpc(): void {
     return setSettingsOutputSchema.parse(settings)
   })
 
+  ipcMain.handle(IPC_CHANNELS.recordingSelectSource, (event, input: unknown) => {
+    validateSender(event)
+    const { sourceId } = recordingSelectSourceInputSchema.parse(input)
+    setSelectedSourceId(sourceId)
+    return recordingSelectSourceOutputSchema.parse(true)
+  })
+
   ipcMain.handle(IPC_CHANNELS.recordingStart, async (event, input: unknown) => {
     validateSender(event)
     const recording = recordingStartInputSchema.parse(input)
@@ -151,7 +171,13 @@ export function registerIpc(): void {
       throw new Error('No source selected')
     }
     setSelectedSourceId(recording.sourceId)
-    const filePath = await startRecordingFile(recording.saveDir)
+    const filePath = await startRecordingFile(recording.saveDir, new Date(), recording.mimeType)
+    // Get our own window out of the recording.
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && !win.isMinimized()) {
+      win.minimize()
+      await sleep(500)
+    }
     return recordingStartOutputSchema.parse({ filePath })
   })
 
@@ -164,8 +190,13 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.recordingStop, async (event, input: unknown) => {
     validateSender(event)
     const stop = recordingStopInputSchema.parse(input)
-    const filePath = await stopRecordingFile(stop.mimeType)
-    setSelectedSourceId('')
-    return recordingStopOutputSchema.parse({ filePath })
+    const win = BrowserWindow.fromWebContents(event.sender)
+    try {
+      const filePath = await stopRecordingFile(stop.mimeType, stop.discard === true)
+      return recordingStopOutputSchema.parse({ filePath })
+    } finally {
+      setSelectedSourceId('')
+      if (win && win.isMinimized()) win.restore()
+    }
   })
 }

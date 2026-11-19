@@ -5,6 +5,7 @@ import type {
   GetSourcesOutput,
   PickFolderOutput,
   Settings,
+  RecordingSelectSourceInput,
   RecordingStartInput,
   RecordingStartOutput,
   RecordingChunkOutput,
@@ -23,6 +24,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.getSettings, undefined),
   setSettings: (settings: Settings): Promise<Settings> =>
     ipcRenderer.invoke(IPC_CHANNELS.setSettings, settings),
+  recordingSelectSource: (input: RecordingSelectSourceInput): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recordingSelectSource, input),
   recordingStart: (input: RecordingStartInput): Promise<RecordingStartOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.recordingStart, input),
   recordingChunk: (chunk: ArrayBuffer): Promise<RecordingChunkOutput> =>

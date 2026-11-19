@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   pickFolder: 'pick-folder',
   getSettings: 'get-settings',
   setSettings: 'set-settings',
+  recordingSelectSource: 'recording-select-source',
   recordingStart: 'recording-start',
   recordingChunk: 'recording-chunk',
   recordingStop: 'recording-stop'

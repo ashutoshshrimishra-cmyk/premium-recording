@@ -1,4 +1,4 @@
-import { access, mkdir, statfs, rename } from 'node:fs/promises'
+import { access, mkdir, statfs, rename, stat, unlink } from 'node:fs/promises'
 import { constants, createWriteStream, type WriteStream } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -44,9 +44,13 @@ export function hasEnoughDiskSpace(
   return availableBytes >= minimumBytes
 }
 
-export async function startRecordingFile(saveDir: string, now = new Date()): Promise<string> {
+export async function startRecordingFile(
+  saveDir: string,
+  now = new Date(),
+  mimeType = 'video/mp4'
+): Promise<string> {
   const directory = await checkRecordingDestination(saveDir)
-  const mp4Path = join(directory, generateRecordingFilename(now, 'video/mp4'))
+  const mp4Path = join(directory, generateRecordingFilename(now, mimeType))
   activeFilePath = mp4Path
   streamError = undefined
   activeStream = createWriteStream(mp4Path, { flags: 'w' })
@@ -60,13 +64,16 @@ export async function startRecordingFile(saveDir: string, now = new Date()): Pro
   return mp4Path
 }
 
-export function appendRecordingChunk(chunk: ArrayBuffer): Promise<boolean> {
+export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Promise<boolean> {
   const stream = activeStream
   if (!stream || stream.destroyed || streamError) return Promise.resolve(false)
   if (chunk.byteLength === 0) return Promise.resolve(true)
+  const data = ArrayBuffer.isView(chunk)
+    ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+    : Buffer.from(chunk)
 
   return new Promise((resolveChunk, rejectChunk) => {
-    stream.write(Buffer.from(chunk), (error) => {
+    stream.write(data, (error) => {
       if (error) {
         streamError = error
         rejectChunk(error)
@@ -81,24 +88,39 @@ export function appendRecordingChunk(chunk: ArrayBuffer): Promise<boolean> {
   })
 }
 
-export async function stopRecordingFile(mimeType: string): Promise<string> {
+export async function stopRecordingFile(mimeType: string, discard = false): Promise<string> {
   if (!activeStream || !activeFilePath) throw new Error('No active recording')
   const stream = activeStream
-  await new Promise<void>((resolveClosed, reject) => {
-    stream.once('close', resolveClosed)
-    stream.once('error', reject)
-    stream.end()
-  })
-  if (streamError) throw streamError
+  const startedPath = activeFilePath
+  try {
+    await new Promise<void>((resolveClosed, reject) => {
+      stream.once('close', resolveClosed)
+      stream.once('error', reject)
+      stream.end()
+    })
+    if (streamError) throw streamError
 
-  const extension = mimeType.toLowerCase().includes('webm') ? 'webm' : 'mp4'
-  const finalPath = activeFilePath.endsWith('.mp4')
-    ? activeFilePath.slice(0, -4) + `.${extension}`
-    : activeFilePath
-  if (finalPath !== activeFilePath) await rename(activeFilePath, finalPath)
+    if (discard) {
+      await unlink(startedPath).catch(() => undefined)
+      throw new Error('Recording was cancelled')
+    }
 
-  activeStream = undefined
-  activeFilePath = undefined
-  streamError = undefined
-  return finalPath
+    // Never leave a silent 0-byte file behind: tell the user the capture produced nothing.
+    const { size } = await stat(startedPath)
+    if (size === 0) {
+      await unlink(startedPath).catch(() => undefined)
+      throw new Error('Recording produced no data (0 bytes). The screen capture did not deliver any video.')
+    }
+
+    const extension = mimeType.toLowerCase().includes('webm') ? 'webm' : 'mp4'
+    const finalPath = startedPath.endsWith('.mp4')
+      ? startedPath.slice(0, -4) + `.${extension}`
+      : startedPath
+    if (finalPath !== startedPath) await rename(startedPath, finalPath)
+    return finalPath
+  } finally {
+    activeStream = undefined
+    activeFilePath = undefined
+    streamError = undefined
+  }
 }
