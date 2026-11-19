@@ -1,22 +1,23 @@
-import { contextBridge } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+import { contextBridge, ipcRenderer } from 'electron'
+import { IPC_CHANNELS } from '../shared/ipc-channels'
+import type {
+  GetDisplaysOutput,
+  GetSourcesOutput,
+  PickFolderOutput,
+  Settings
+} from '../shared/ipc-schemas'
 
-// Custom APIs for renderer
-const api = {}
-
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.api = api
+const api = {
+  getSources: (): Promise<GetSourcesOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.getSources, undefined),
+  getDisplays: (): Promise<GetDisplaysOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.getDisplays, undefined),
+  pickFolder: (): Promise<PickFolderOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.pickFolder, undefined),
+  getSettings: (): Promise<Settings> =>
+    ipcRenderer.invoke(IPC_CHANNELS.getSettings, undefined),
+  setSettings: (settings: Settings): Promise<Settings> =>
+    ipcRenderer.invoke(IPC_CHANNELS.setSettings, settings)
 }
+
+contextBridge.exposeInMainWorld('api', api)
