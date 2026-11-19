@@ -1,8 +1,9 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, BrowserWindow, desktopCapturer, session } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpc } from './ipc'
+import { getSelectedSourceId } from './recording'
 
 function createWindow(): void {
   // Create the browser window.
@@ -43,6 +44,23 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   registerIpc()
+  session.defaultSession.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      const sourceId = getSelectedSourceId()
+      if (!sourceId) {
+        callback(null)
+        return
+      }
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1, height: 1 },
+        fetchWindowIcons: false
+      })
+      const source = sources.find((item) => item.id === sourceId)
+      callback(source ? { video: { id: source.id, name: source.name } } : null)
+    },
+    { useSystemPicker: false }
+  )
   createWindow()
 
   app.on('activate', function () {

@@ -4,7 +4,12 @@ import type {
   GetDisplaysOutput,
   GetSourcesOutput,
   PickFolderOutput,
-  Settings
+  Settings,
+  RecordingStartInput,
+  RecordingStartOutput,
+  RecordingChunkOutput,
+  RecordingStopInput,
+  RecordingStopOutput
 } from '../shared/ipc-schemas'
 
 const api = {
@@ -17,7 +22,13 @@ const api = {
   getSettings: (): Promise<Settings> =>
     ipcRenderer.invoke(IPC_CHANNELS.getSettings, undefined),
   setSettings: (settings: Settings): Promise<Settings> =>
-    ipcRenderer.invoke(IPC_CHANNELS.setSettings, settings)
+    ipcRenderer.invoke(IPC_CHANNELS.setSettings, settings),
+  recordingStart: (input: RecordingStartInput): Promise<RecordingStartOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recordingStart, input),
+  recordingChunk: (chunk: ArrayBuffer): Promise<RecordingChunkOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recordingChunk, chunk),
+  recordingStop: (input: RecordingStopInput): Promise<RecordingStopOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recordingStop, input)
 }
 
 contextBridge.exposeInMainWorld('api', api)

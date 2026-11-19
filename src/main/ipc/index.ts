@@ -17,9 +17,21 @@ import {
   getSettingsOutputSchema,
   setSettingsInputSchema,
   setSettingsOutputSchema,
+  recordingStartInputSchema,
+  recordingStartOutputSchema,
+  recordingChunkInputSchema,
+  recordingChunkOutputSchema,
+  recordingStopInputSchema,
+  recordingStopOutputSchema,
   type Settings
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import {
+  appendRecordingChunk,
+  setSelectedSourceId,
+  startRecordingFile,
+  stopRecordingFile
+} from '../recording'
 
 const settingsDefaults: Settings = {
   saveDir: 'Videos/MyRecorder',
@@ -125,5 +137,35 @@ export function registerIpc(): void {
     const settings = setSettingsInputSchema.parse(input)
     store.set(settings)
     return setSettingsOutputSchema.parse(settings)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recordingStart, async (event, input: unknown) => {
+    validateSender(event)
+    const recording = recordingStartInputSchema.parse(input)
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false
+    })
+    if (!sources.some((source) => source.id === recording.sourceId)) {
+      throw new Error('No source selected')
+    }
+    setSelectedSourceId(recording.sourceId)
+    const filePath = await startRecordingFile(recording.saveDir)
+    return recordingStartOutputSchema.parse({ filePath })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recordingChunk, (event, input: unknown) => {
+    validateSender(event)
+    const chunk = recordingChunkInputSchema.parse(input)
+    return recordingChunkOutputSchema.parse(appendRecordingChunk(chunk))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recordingStop, async (event, input: unknown) => {
+    validateSender(event)
+    const stop = recordingStopInputSchema.parse(input)
+    const filePath = await stopRecordingFile(stop.mimeType)
+    setSelectedSourceId('')
+    return recordingStopOutputSchema.parse({ filePath })
   })
 }

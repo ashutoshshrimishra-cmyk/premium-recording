@@ -1,4 +1,14 @@
-import type { GetDisplaysOutput, GetSourcesOutput, PickFolderOutput, Settings } from '../shared/ipc-schemas'
+import type {
+  GetDisplaysOutput,
+  GetSourcesOutput,
+  PickFolderOutput,
+  Settings,
+  RecordingStartInput,
+  RecordingStartOutput,
+  RecordingChunkOutput,
+  RecordingStopInput,
+  RecordingStopOutput
+} from '../shared/ipc-schemas'
 
 interface RecorderApi {
   getSources(): Promise<GetSourcesOutput>
@@ -6,6 +16,9 @@ interface RecorderApi {
   pickFolder(): Promise<PickFolderOutput>
   getSettings(): Promise<Settings>
   setSettings(settings: Settings): Promise<Settings>
+  recordingStart(input: RecordingStartInput): Promise<RecordingStartOutput>
+  recordingChunk(chunk: ArrayBuffer): Promise<RecordingChunkOutput>
+  recordingStop(input: RecordingStopInput): Promise<RecordingStopOutput>
 }
 
 declare global {

@@ -3,5 +3,8 @@ export const IPC_CHANNELS = {
   getDisplays: 'get-displays',
   pickFolder: 'pick-folder',
   getSettings: 'get-settings',
-  setSettings: 'set-settings'
+  setSettings: 'set-settings',
+  recordingStart: 'recording-start',
+  recordingChunk: 'recording-chunk',
+  recordingStop: 'recording-stop'
 } as const
