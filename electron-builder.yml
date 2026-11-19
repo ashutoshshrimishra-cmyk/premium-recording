@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: premium-recording
+productName: Premium Recording
 directories:
   buildResources: build
 files:

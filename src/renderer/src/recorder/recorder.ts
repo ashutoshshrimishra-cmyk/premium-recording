@@ -1,3 +1,5 @@
+import { RecordingChunkWriter } from './chunkWriter'
+
 export interface RecorderCallbacks {
   onStatus: (status: 'starting' | 'recording' | 'paused' | 'stopping') => void
   onError: (message: string) => void
@@ -23,6 +25,7 @@ export class ScreenRecorder {
   private animationId = 0
   private stopped = false
   private frameTimes: number[] = []
+  private chunkWriter?: RecordingChunkWriter
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -35,6 +38,10 @@ export class ScreenRecorder {
   }): Promise<void> {
     this.stopped = false
     this.callbacks.onStatus('starting')
+    this.chunkWriter = new RecordingChunkWriter(
+      (chunk) => window.api.recordingChunk(chunk),
+      (error) => this.callbacks.onError(`Chunk write failed: ${error.message}`)
+    )
 
     await window.api.recordingStart({
       sourceId: options.sourceId,
@@ -106,12 +113,7 @@ export class ScreenRecorder {
     this.callbacks.onMimeType(mimeType)
     this.mediaRecorder = new MediaRecorder(drawStream, { mimeType })
     this.mediaRecorder.ondataavailable = (event): void => {
-      if (event.data.size === 0) return
-      void event.data.arrayBuffer().then((buffer) => {
-        void window.api.recordingChunk(buffer).catch((error) => {
-          this.callbacks.onError(`Chunk write failed: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      })
+      this.chunkWriter?.enqueue(event.data)
     }
     this.mediaRecorder.onerror = (event): void => {
       this.callbacks.onError(`MediaRecorder error: ${String(event.error?.message || 'unknown error')}`)
@@ -160,9 +162,16 @@ export class ScreenRecorder {
 
   private async finishStop(mimeType: string): Promise<void> {
     this.stopTracks()
+    let chunkWriteError: Error | undefined
+    try {
+      await this.chunkWriter?.flush()
+    } catch (error) {
+      chunkWriteError = error instanceof Error ? error : new Error(String(error))
+    }
+
     try {
       const result = await window.api.recordingStop({ mimeType })
-      this.callbacks.onFile(result.filePath)
+      if (!chunkWriteError) this.callbacks.onFile(result.filePath)
     } catch (error) {
       this.callbacks.onError(error instanceof Error ? error.message : 'Could not close the recording')
     }

@@ -60,10 +60,25 @@ export async function startRecordingFile(saveDir: string, now = new Date()): Pro
   return mp4Path
 }
 
-export function appendRecordingChunk(chunk: ArrayBuffer): boolean {
-  if (!activeStream || activeStream.destroyed || streamError) return false
-  activeStream.write(Buffer.from(chunk))
-  return !activeStream.destroyed
+export function appendRecordingChunk(chunk: ArrayBuffer): Promise<boolean> {
+  const stream = activeStream
+  if (!stream || stream.destroyed || streamError) return Promise.resolve(false)
+  if (chunk.byteLength === 0) return Promise.resolve(true)
+
+  return new Promise((resolveChunk, rejectChunk) => {
+    stream.write(Buffer.from(chunk), (error) => {
+      if (error) {
+        streamError = error
+        rejectChunk(error)
+        return
+      }
+      if (streamError) {
+        rejectChunk(streamError)
+        return
+      }
+      resolveChunk(true)
+    })
+  })
 }
 
 export async function stopRecordingFile(mimeType: string): Promise<string> {

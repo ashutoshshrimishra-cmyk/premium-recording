@@ -155,10 +155,10 @@ export function registerIpc(): void {
     return recordingStartOutputSchema.parse({ filePath })
   })
 
-  ipcMain.handle(IPC_CHANNELS.recordingChunk, (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.recordingChunk, async (event, input: unknown) => {
     validateSender(event)
     const chunk = recordingChunkInputSchema.parse(input)
-    return recordingChunkOutputSchema.parse(appendRecordingChunk(chunk))
+    return recordingChunkOutputSchema.parse(await appendRecordingChunk(chunk))
   })
 
   ipcMain.handle(IPC_CHANNELS.recordingStop, async (event, input: unknown) => {
