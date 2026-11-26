@@ -7,5 +7,9 @@ export const IPC_CHANNELS = {
   recordingSelectSource: 'recording-select-source',
   recordingStart: 'recording-start',
   recordingChunk: 'recording-chunk',
-  recordingStop: 'recording-stop'
+  recordingStop: 'recording-stop',
+  recordingStopRequested: 'recording-stop-requested',
+  overlaySetInteractive: 'overlay-set-interactive',
+  overlayInteractiveChanged: 'overlay-interactive-changed',
+  overlayRequestStop: 'overlay-request-stop'
 } as const

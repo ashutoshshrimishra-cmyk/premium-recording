@@ -1,10 +1,12 @@
-import { access, mkdir, statfs, rename, stat, unlink } from 'node:fs/promises'
-import { constants, createWriteStream, type WriteStream } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { access, copyFile, link, mkdir, open, stat, statfs, unlink } from 'node:fs/promises'
+import { constants, type WriteStream } from 'node:fs'
+import { basename, extname, join, resolve } from 'node:path'
 
 let selectedSourceId = ''
 let activeStream: WriteStream | undefined
-let activeFilePath: string | undefined
+let startingFile = false
+let activeTempPath: string | undefined
+let activeFinalPath: string | undefined
 let streamError: Error | undefined
 
 export function setSelectedSourceId(sourceId: string): void {
@@ -44,30 +46,65 @@ export function hasEnoughDiskSpace(
   return availableBytes >= minimumBytes
 }
 
+async function openUniqueRecording(
+  directory: string,
+  filename: string
+): Promise<{ stream: WriteStream; finalPath: string; tempPath: string }> {
+  const extension = extname(filename)
+  const stem = basename(filename, extension)
+
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const suffix = attempt === 0 ? '' : `_${attempt + 1}`
+    const finalPath = join(directory, `${stem}${suffix}${extension}`)
+    const tempPath = `${finalPath}.part`
+    try {
+      await access(finalPath)
+      continue
+    } catch {
+      // The desired final path is free. The exclusive .part open reserves this attempt.
+    }
+    try {
+      const handle = await open(tempPath, 'wx')
+      return { stream: handle.createWriteStream(), finalPath, tempPath }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+
+  throw new Error('Could not create a unique recording filename')
+}
+
 export async function startRecordingFile(
   saveDir: string,
   now = new Date(),
   mimeType = 'video/mp4'
 ): Promise<string> {
-  const directory = await checkRecordingDestination(saveDir)
-  const mp4Path = join(directory, generateRecordingFilename(now, mimeType))
-  activeFilePath = mp4Path
-  streamError = undefined
-  activeStream = createWriteStream(mp4Path, { flags: 'w' })
-  activeStream.on('error', (error) => {
-    streamError = error instanceof Error ? error : new Error(String(error))
-  })
-  await new Promise<void>((resolveReady, reject) => {
-    activeStream!.once('open', () => resolveReady())
-    activeStream!.once('error', reject)
-  })
-  return mp4Path
+  if (activeStream || startingFile) throw new Error('A recording is already in progress')
+  startingFile = true
+
+  try {
+    const directory = await checkRecordingDestination(saveDir)
+    const opened = await openUniqueRecording(directory, generateRecordingFilename(now, mimeType))
+    activeStream = opened.stream
+    activeTempPath = opened.tempPath
+    activeFinalPath = opened.finalPath
+    streamError = undefined
+    activeStream.on('error', (error) => {
+      streamError = error instanceof Error ? error : new Error(String(error))
+    })
+    return opened.finalPath
+  } finally {
+    startingFile = false
+  }
 }
 
 export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Promise<boolean> {
   const stream = activeStream
-  if (!stream || stream.destroyed || streamError) return Promise.resolve(false)
+  if (!stream || stream.destroyed || stream.closed || streamError) return Promise.resolve(false)
   if (chunk.byteLength === 0) return Promise.resolve(true)
+  if (chunk.byteLength > 16 * 1024 * 1024) {
+    return Promise.reject(new Error('Recording chunk exceeds 16 MB'))
+  }
   const data = ArrayBuffer.isView(chunk)
     ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
     : Buffer.from(chunk)
@@ -88,39 +125,103 @@ export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Prom
   })
 }
 
+async function closeStream(stream: WriteStream): Promise<void> {
+  if (stream.closed) return
+  await new Promise<void>((resolveClosed, reject) => {
+    const onClose = (): void => {
+      cleanup()
+      resolveClosed()
+    }
+    const onError = (error: Error): void => {
+      cleanup()
+      reject(error)
+    }
+    const cleanup = (): void => {
+      stream.removeListener('close', onClose)
+      stream.removeListener('error', onError)
+    }
+    stream.once('close', onClose)
+    stream.once('error', onError)
+    if (!stream.writableEnded) stream.end()
+  })
+}
+
+function clearActiveRecording(): void {
+  activeStream = undefined
+  activeTempPath = undefined
+  activeFinalPath = undefined
+  streamError = undefined
+}
+
+async function finalizeWithoutOverwrite(tempPath: string, desiredPath: string): Promise<string> {
+  const extension = extname(desiredPath)
+  const stem = desiredPath.slice(0, -extension.length)
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const finalPath = attempt === 0 ? desiredPath : `${stem}_${attempt + 1}${extension}`
+    try {
+      await link(tempPath, finalPath)
+      await unlink(tempPath).catch(() => undefined)
+      return finalPath
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST') continue
+      if (code === 'EPERM' || code === 'ENOSYS' || code === 'ENOTSUP') {
+        try {
+          await copyFile(tempPath, finalPath, constants.COPYFILE_EXCL)
+          await unlink(tempPath).catch(() => undefined)
+          return finalPath
+        } catch (copyError) {
+          if ((copyError as NodeJS.ErrnoException).code === 'EEXIST') continue
+          throw copyError
+        }
+      }
+      throw error
+    }
+  }
+  throw new Error('Could not finalize a unique recording filename')
+}
+
 export async function stopRecordingFile(mimeType: string, discard = false): Promise<string> {
-  if (!activeStream || !activeFilePath) throw new Error('No active recording')
+  if (!activeStream || !activeTempPath || !activeFinalPath) {
+    throw new Error('No active recording')
+  }
   const stream = activeStream
-  const startedPath = activeFilePath
+  const tempPath = activeTempPath
+  const extension = mimeType.toLowerCase().includes('webm') ? '.webm' : '.mp4'
+  const finalPath = activeFinalPath.replace(/\.(?:mp4|webm)$/i, extension)
   try {
-    await new Promise<void>((resolveClosed, reject) => {
-      stream.once('close', resolveClosed)
-      stream.once('error', reject)
-      stream.end()
-    })
+    await closeStream(stream)
     if (streamError) throw streamError
 
     if (discard) {
-      await unlink(startedPath).catch(() => undefined)
+      await unlink(tempPath).catch(() => undefined)
       throw new Error('Recording was cancelled')
     }
 
-    // Never leave a silent 0-byte file behind: tell the user the capture produced nothing.
-    const { size } = await stat(startedPath)
+    const { size } = await stat(tempPath)
     if (size === 0) {
-      await unlink(startedPath).catch(() => undefined)
+      await unlink(tempPath).catch(() => undefined)
       throw new Error('Recording produced no data (0 bytes). The screen capture did not deliver any video.')
     }
 
-    const extension = mimeType.toLowerCase().includes('webm') ? 'webm' : 'mp4'
-    const finalPath = startedPath.endsWith('.mp4')
-      ? startedPath.slice(0, -4) + `.${extension}`
-      : startedPath
-    if (finalPath !== startedPath) await rename(startedPath, finalPath)
-    return finalPath
+    return await finalizeWithoutOverwrite(tempPath, finalPath)
+  } catch (error) {
+    if (!discard) await unlink(tempPath).catch(() => undefined)
+    throw error
   } finally {
-    activeStream = undefined
-    activeFilePath = undefined
-    streamError = undefined
+    clearActiveRecording()
+  }
+}
+
+export async function discardActiveRecording(): Promise<void> {
+  const stream = activeStream
+  const tempPath = activeTempPath
+  if (!stream || !tempPath) return
+  try {
+    await closeStream(stream).catch(() => undefined)
+    await unlink(tempPath).catch(() => undefined)
+  } finally {
+    clearActiveRecording()
+    setSelectedSourceId('')
   }
 }

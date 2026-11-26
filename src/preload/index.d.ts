@@ -6,9 +6,13 @@ import type {
   RecordingSelectSourceInput,
   RecordingStartInput,
   RecordingStartOutput,
+  RecordingChunkInput,
   RecordingChunkOutput,
   RecordingStopInput,
-  RecordingStopOutput
+  RecordingStopOutput,
+  OverlaySetInteractiveInput,
+  OverlaySetInteractiveOutput,
+  OverlayRequestStopOutput
 } from '../shared/ipc-schemas'
 
 interface RecorderApi {
@@ -19,8 +23,12 @@ interface RecorderApi {
   setSettings(settings: Settings): Promise<Settings>
   recordingSelectSource(input: RecordingSelectSourceInput): Promise<boolean>
   recordingStart(input: RecordingStartInput): Promise<RecordingStartOutput>
-  recordingChunk(chunk: ArrayBuffer): Promise<RecordingChunkOutput>
+  recordingChunk(input: RecordingChunkInput): Promise<RecordingChunkOutput>
   recordingStop(input: RecordingStopInput): Promise<RecordingStopOutput>
+  onRecordingStopRequested(callback: () => void): () => void
+  overlaySetInteractive(input: OverlaySetInteractiveInput): Promise<OverlaySetInteractiveOutput>
+  overlayRequestStop(): Promise<OverlayRequestStopOutput>
+  onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void
 }
 
 declare global {

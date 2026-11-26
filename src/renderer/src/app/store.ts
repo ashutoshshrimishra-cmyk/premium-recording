@@ -45,7 +45,7 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
   selectedSourceId: '',
   resolution: '1080p',
   fps: 30,
-  audioDeviceId: '',
+  audioDeviceId: 'none',
   noiseSuppression: true,
   saveDir: '',
   loaded: false,
