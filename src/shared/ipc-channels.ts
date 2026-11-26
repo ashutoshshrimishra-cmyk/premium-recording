@@ -14,6 +14,8 @@ export const IPC_CHANNELS = {
   overlayRequestStop: 'overlay-request-stop',
   overlayCommand: 'overlay-command',
   overlayCommandReceived: 'overlay-command-received',
+  overlayCursor: 'overlay-cursor',
+  overlayClick: 'overlay-click',
   overlayReportHistory: 'overlay-report-history',
   overlayHistoryChanged: 'overlay-history-changed',
   overlaySaveScreenshot: 'overlay-save-screenshot',

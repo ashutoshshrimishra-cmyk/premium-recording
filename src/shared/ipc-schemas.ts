@@ -111,6 +111,28 @@ export const overlayShapeSchema = z.enum([
 ])
 export const overlayStampSchema = z.enum(['check', 'cross', 'star', 'heart', 'question', 'arrow'])
 
+export const cursorEffectSettingsSchema = z.object({
+  highlight: z.boolean(),
+  ripple: z.boolean(),
+  drawPointer: z.boolean(),
+  highlightColor: z.string().max(40),
+  radius: z.number().min(8).max(120)
+})
+
+/** Cursor position relative to the captured display, pushed from the main process. */
+export const overlayCursorSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  inside: z.boolean()
+})
+
+/** A global mouse click relative to the captured display. */
+export const overlayClickSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  button: z.enum(['left', 'right'])
+})
+
 /** Commands sent from the toolbar window to the annotation canvas window (through the main process). */
 export const overlayCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tool'), tool: overlayToolSchema }),
@@ -121,7 +143,8 @@ export const overlayCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('fontSize'), fontSize: z.number().int().min(8).max(200) }),
   z.object({ type: z.literal('undo') }),
   z.object({ type: z.literal('redo') }),
-  z.object({ type: z.literal('clear') })
+  z.object({ type: z.literal('clear') }),
+  z.object({ type: z.literal('cursorEffect'), settings: cursorEffectSettingsSchema })
 ])
 export const overlayCommandOutputSchema = z.boolean()
 
@@ -202,6 +225,8 @@ export type OverlayRequestStopOutput = z.infer<typeof overlayRequestStopOutputSc
 export type OverlayTool = z.infer<typeof overlayToolSchema>
 export type OverlayShape = z.infer<typeof overlayShapeSchema>
 export type OverlayStamp = z.infer<typeof overlayStampSchema>
+export type OverlayCursor = z.infer<typeof overlayCursorSchema>
+export type OverlayClick = z.infer<typeof overlayClickSchema>
 export type OverlayCommand = z.infer<typeof overlayCommandSchema>
 export type OverlayHistoryState = z.infer<typeof overlayHistoryStateSchema>
 export type MicCommand = z.infer<typeof micCommandSchema>

@@ -42,6 +42,8 @@ import type {
   OverlayTool,
   PanelDock
 } from '../../../shared/ipc-schemas'
+import { cursorEffectSettingsSchema } from '../../../shared/ipc-schemas'
+import { defaultCursorEffect, type CursorEffectSettings } from '../overlay/cursorEffect'
 import {
   COLORS,
   DEFAULT_COLOR,
@@ -53,7 +55,23 @@ import {
   WIDTHS
 } from '../overlay/options'
 
-type Panel = 'tool' | 'format' | 'mic'
+type Panel = 'tool' | 'format' | 'mic' | 'cursor'
+
+const CURSOR_STORAGE_KEY = 'premium-recording.cursorEffect'
+
+function loadCursorEffect(): CursorEffectSettings {
+  try {
+    const raw = window.localStorage.getItem(CURSOR_STORAGE_KEY)
+    if (!raw) return defaultCursorEffect
+    const parsed = cursorEffectSettingsSchema.safeParse({
+      ...defaultCursorEffect,
+      ...(JSON.parse(raw) as object)
+    })
+    return parsed.success ? parsed.data : defaultCursorEffect
+  } catch {
+    return defaultCursorEffect
+  }
+}
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
 
 const TOOLS: ReadonlyArray<{ tool: OverlayTool; label: string; Icon: LucideIcon }> = [
@@ -166,6 +184,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
   const [dock, setDock] = useState<PanelDock>('right')
   const [expanded, setExpanded] = useState(false)
   const [mic, setMic] = useState<MicState>(INITIAL_MIC)
+  const [cursorEffect, setCursorEffect] = useState<CursorEffectSettings>(loadCursorEffect)
   const vertical = dock === 'left' || dock === 'right'
 
   const sendMic = useCallback((command: MicCommand): void => {
@@ -206,6 +225,22 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
   }, [])
+
+  // Push the saved cursor effect to the canvas once it is running, and after each change.
+  useEffect(() => {
+    window.api
+      .overlaySendCommand({ type: 'cursorEffect', settings: cursorEffect })
+      .catch((error: unknown) => console.error('Cursor effect command failed', error))
+    try {
+      window.localStorage.setItem(CURSOR_STORAGE_KEY, JSON.stringify(cursorEffect))
+    } catch {
+      // Persistence is optional.
+    }
+  }, [cursorEffect])
+
+  const toggleCursor = (key: 'highlight' | 'ripple' | 'drawPointer'): void => {
+    setCursorEffect((current) => ({ ...current, [key]: !current[key] }))
+  }
 
   const chooseTool = (next: OverlayTool): void => {
     setMessage('')
@@ -400,9 +435,48 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     </div>
   )
 
+  const cursorOptions = (
+    <div className="tb-group" role="group" aria-label="Cursor">
+      <button
+        type="button"
+        className="tb-chip"
+        role="switch"
+        aria-checked={cursorEffect.highlight}
+        aria-pressed={cursorEffect.highlight}
+        title="Yellow halo that follows the mouse"
+        onClick={() => toggleCursor('highlight')}
+      >
+        <span>Highlight</span>
+      </button>
+      <button
+        type="button"
+        className="tb-chip"
+        role="switch"
+        aria-checked={cursorEffect.ripple}
+        aria-pressed={cursorEffect.ripple}
+        title="Ring that expands on every click"
+        onClick={() => toggleCursor('ripple')}
+      >
+        <span>Click effect</span>
+      </button>
+      <button
+        type="button"
+        className="tb-chip"
+        role="switch"
+        aria-checked={cursorEffect.drawPointer}
+        aria-pressed={cursorEffect.drawPointer}
+        title="Draw an arrow pointer. Use this when the cursor is missing in the video."
+        onClick={() => toggleCursor('drawPointer')}
+      >
+        <span>Show pointer</span>
+      </button>
+    </div>
+  )
+
   const needsOptions =
     message !== '' ||
     panel === 'format' ||
+    panel === 'cursor' ||
     panel === 'mic' ||
     (panel === 'tool' && (tool === 'draw' || tool === 'stamp'))
 
@@ -425,6 +499,8 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     options = formatOptions
   } else if (panel === 'mic') {
     options = micOptions
+  } else if (panel === 'cursor') {
+    options = cursorOptions
   } else if (tool === 'draw') {
     options = (
       <div className="tb-group" role="group" aria-label="Drawing shape">
@@ -483,6 +559,13 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
         icon={<span className="tb-format-swatch" style={{ backgroundColor: color }} />}
         pressed={panel === 'format'}
         onClick={() => setPanel((current) => (current === 'format' ? 'tool' : 'format'))}
+      />
+      <ToolButton
+        label="Cursor"
+        title="Cursor highlight, click effect and pointer in the recording"
+        icon={<MousePointer2 size={vertical ? 20 : 22} />}
+        pressed={panel === 'cursor'}
+        onClick={() => setPanel((current) => (current === 'cursor' ? 'tool' : 'cursor'))}
       />
       <ToolButton
         label={mic.muted ? 'Muted' : 'Mic'}

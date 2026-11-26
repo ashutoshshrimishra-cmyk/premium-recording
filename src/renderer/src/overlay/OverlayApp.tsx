@@ -23,6 +23,18 @@ import {
   type DraftAnnotation
 } from './drawing'
 import {
+  SMOOTHING_ALPHA,
+  addRipple,
+  createRippleState,
+  defaultCursorEffect,
+  hasConverged,
+  smoothPosition,
+  stepRipples,
+  type CursorEffectSettings,
+  type Position
+} from './cursorEffect'
+import { drawCursorLayer } from './cursorDrawing'
+import {
   DEFAULT_COLOR,
   DEFAULT_FONT_SIZE,
   DEFAULT_SHAPE,
@@ -70,6 +82,16 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
   const editorClosedRef = useRef(true)
   const textEditorRef = useRef<TextEditor | null>(null)
 
+  const cursorCanvasRef = useRef<HTMLCanvasElement>(null)
+  const cursorSettingsRef = useRef<CursorEffectSettings>(defaultCursorEffect)
+  const cursorTargetRef = useRef<Position | undefined>(undefined)
+  const cursorShownRef = useRef<Position | undefined>(undefined)
+  const cursorInsideRef = useRef(false)
+  const ripplesRef = useRef(createRippleState())
+  const hookSeenRef = useRef(false)
+  const cursorFrameRef = useRef<number | null>(null)
+  const cursorTickRef = useRef<() => void>(() => undefined)
+
   if (storeRef.current === null) storeRef.current = new AnnotationStore()
 
   const [tool, setTool] = useState<CanvasTool>('draw')
@@ -92,6 +114,12 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
   const scheduleDraw = useCallback((): void => {
     if (frameRef.current === null) {
       frameRef.current = requestAnimationFrame(() => drawFrameRef.current())
+    }
+  }, [])
+
+  const scheduleCursor = useCallback((): void => {
+    if (cursorFrameRef.current === null) {
+      cursorFrameRef.current = requestAnimationFrame(() => cursorTickRef.current())
     }
   }, [])
 
@@ -158,6 +186,16 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>): void => {
+      if (
+        interactive &&
+        !hookSeenRef.current &&
+        event.pointerType === 'mouse' &&
+        cursorSettingsRef.current.ripple
+      ) {
+        // Fallback when the global mouse hook is not available.
+        addRipple(ripplesRef.current, event.clientX, event.clientY, performance.now())
+        scheduleCursor()
+      }
       if (!interactive || activePointerRef.current !== null) return
       if (event.pointerType === 'mouse' && event.button !== 0) return
 
@@ -204,6 +242,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
       markChanged,
       openTextEditor,
       pointFromEvent,
+      scheduleCursor,
       scheduleDraw,
       shape,
       stamp,
@@ -285,6 +324,62 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
     [scheduleDraw]
   )
 
+  // Cursor layer: halo, ripples and pointer. Runs only while something moves or fades.
+  useEffect(() => {
+    cursorTickRef.current = (): void => {
+      cursorFrameRef.current = null
+      const canvas = cursorCanvasRef.current
+      const context = canvas?.getContext('2d')
+      if (!canvas || !context) return
+      const bounds = canvas.getBoundingClientRect()
+      const ratio = Math.max(1, window.devicePixelRatio || 1)
+      const pixelWidth = Math.max(1, Math.round(bounds.width * ratio))
+      const pixelHeight = Math.max(1, Math.round(bounds.height * ratio))
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth
+        canvas.height = pixelHeight
+      }
+      context.setTransform(ratio, 0, 0, ratio, 0, 0)
+      context.clearRect(0, 0, bounds.width, bounds.height)
+
+      const target = cursorTargetRef.current
+      if (target) {
+        cursorShownRef.current = smoothPosition(cursorShownRef.current, target, SMOOTHING_ALPHA)
+      }
+      const shown = cursorShownRef.current
+      const ripples = stepRipples(ripplesRef.current, performance.now())
+      drawCursorLayer(context, {
+        settings: cursorSettingsRef.current,
+        position: cursorInsideRef.current ? shown : undefined,
+        ripples
+      })
+      const moving = Boolean(target && shown && !hasConverged(shown, target))
+      if (moving || ripples.length > 0) scheduleCursor()
+    }
+    scheduleCursor()
+    const offCursor = window.api.onOverlayCursor((cursor) => {
+      cursorTargetRef.current = { x: cursor.x, y: cursor.y }
+      cursorInsideRef.current = cursor.inside
+      scheduleCursor()
+    })
+    const offClick = window.api.onOverlayClick((click) => {
+      hookSeenRef.current = true
+      if (!cursorSettingsRef.current.ripple) return
+      addRipple(ripplesRef.current, click.x, click.y, performance.now())
+      scheduleCursor()
+    })
+    const handleResize = (): void => scheduleCursor()
+    window.addEventListener('resize', handleResize)
+    return () => {
+      offCursor()
+      offClick()
+      window.removeEventListener('resize', handleResize)
+      if (cursorFrameRef.current !== null) cancelAnimationFrame(cursorFrameRef.current)
+      cursorFrameRef.current = null
+      cursorTickRef.current = () => undefined
+    }
+  }, [scheduleCursor])
+
   // Commands from the toolbar window.
   useEffect(() => {
     return window.api.onOverlayCommand((command: OverlayCommand) => {
@@ -317,6 +412,10 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
         case 'redo':
           if (storeRef.current?.redo()) markChanged()
           break
+        case 'cursorEffect':
+          cursorSettingsRef.current = command.settings
+          scheduleCursor()
+          break
         case 'clear':
           closeTextEditor(false)
           storeRef.current?.clear()
@@ -325,7 +424,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
           break
       }
     })
-  }, [cancelActiveInteraction, closeTextEditor, markChanged])
+  }, [cancelActiveInteraction, closeTextEditor, markChanged, scheduleCursor])
 
   useEffect(() => {
     return window.api.onOverlayInteractiveChanged((nextInteractive) => {
@@ -452,6 +551,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
 
   return (
     <main className="overlay-shell">
+      <canvas ref={cursorCanvasRef} className="overlay-cursor-layer" aria-hidden="true" />
       <canvas
         ref={canvasRef}
         className="overlay-canvas"

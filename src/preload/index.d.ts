@@ -14,6 +14,8 @@ import type {
   OverlaySetInteractiveOutput,
   OverlayRequestStopOutput,
   OverlayCommand,
+  OverlayCursor,
+  OverlayClick,
   OverlayHistoryState,
   OverlaySaveScreenshotOutput,
   MicCommand,
@@ -52,6 +54,8 @@ interface RecorderApi {
   diagnosticsGetInfo(): Promise<DiagnosticsInfo>
   diagnosticsShowLog(): Promise<boolean>
   diagnosticsProbeFile(filePath: string): Promise<DiagnosticsProbeFileOutput>
+  onOverlayCursor(callback: (cursor: OverlayCursor) => void): () => void
+  onOverlayClick(callback: (click: OverlayClick) => void): () => void
   onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void
 }
 

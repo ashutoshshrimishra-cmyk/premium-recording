@@ -21,6 +21,8 @@ import type {
 } from '../../shared/ipc-schemas'
 import { screenshotFileName } from '../screenshotName'
 import { log } from '../logger'
+import { startCursorHook, stopCursorHook } from '../cursorHook'
+import { sameSample, toDisplayRelative, type CursorSample } from './cursorMath'
 import {
   clampToDisplays,
   dockBounds,
@@ -57,6 +59,8 @@ let interactive = true
 let panelDock: PanelDock = DEFAULT_DOCK
 let panelExpanded = false
 let panelStore: Store<PanelPrefs> | undefined
+let cursorTimer: ReturnType<typeof setInterval> | undefined
+let lastCursor: CursorSample | undefined
 let panelSaveTimer: ReturnType<typeof setTimeout> | undefined
 
 function getPanelStore(): Store<PanelPrefs> {
@@ -70,6 +74,51 @@ function workAreas(): Rect[] {
 
 function isAlive(win: BrowserWindow | undefined): win is BrowserWindow {
   return Boolean(win && !win.isDestroyed())
+}
+
+const CURSOR_POLL_MS = 16
+
+function stopCursorFeed(): void {
+  if (cursorTimer) clearInterval(cursorTimer)
+  cursorTimer = undefined
+  lastCursor = undefined
+  stopCursorHook()
+}
+
+/** Polls the pointer and pushes display relative positions to the canvas when they change. */
+function startCursorFeed(display: Display): void {
+  stopCursorFeed()
+  cursorTimer = setInterval(() => {
+    const win = canvasWindow
+    if (!isAlive(win)) return
+    try {
+      const sample = toDisplayRelative(screen.getCursorScreenPoint(), display.bounds)
+      if (sameSample(lastCursor, sample)) return
+      lastCursor = sample
+      win.webContents.send(IPC_CHANNELS.overlayCursor, sample)
+    } catch (error) {
+      log('warn', 'Cursor polling failed', error)
+      stopCursorFeed()
+    }
+  }, CURSOR_POLL_MS)
+  startCursorHook((click) => {
+    const win = canvasWindow
+    if (!isAlive(win)) return
+    try {
+      // The hook reports physical pixels on Windows.
+      const dip = process.platform === 'win32' ? screen.screenToDipPoint(click) : click
+      const sample = toDisplayRelative(dip, display.bounds)
+      if (sample.inside) {
+        win.webContents.send(IPC_CHANNELS.overlayClick, {
+          x: sample.x,
+          y: sample.y,
+          button: click.button
+        })
+      }
+    } catch (error) {
+      log('warn', 'Could not forward a click', error)
+    }
+  })
 }
 
 function sendInteractiveState(): void {
@@ -319,6 +368,7 @@ export async function openAnnotationOverlay(
     interactive = false
     canvasWindow.setIgnoreMouseEvents(true, { forward: true })
   }
+  if (isAlive(canvasWindow)) startCursorFeed(display)
   sendInteractiveState()
   const result: OverlayOpenResult = { canvas: isAlive(canvasWindow), toolbar }
   if (errors.length > 0) result.error = errors.join('; ').slice(0, 500)
@@ -427,6 +477,7 @@ export async function saveAnnotationScreenshot(): Promise<string> {
 }
 
 export function closeAnnotationOverlay(): void {
+  stopCursorFeed()
   const windows = [canvasWindow, toolbarWindow]
   if (panelSaveTimer && isAlive(toolbarWindow)) {
     // Persist a pending position before the window goes away.

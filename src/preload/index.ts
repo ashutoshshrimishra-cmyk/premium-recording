@@ -16,6 +16,8 @@ import type {
   OverlaySetInteractiveOutput,
   OverlayRequestStopOutput,
   OverlayCommand,
+  OverlayCursor,
+  OverlayClick,
   OverlayHistoryState,
   OverlaySaveScreenshotOutput,
   MicCommand,
@@ -62,6 +64,18 @@ const api = {
       callback(command)
     ipcRenderer.on(IPC_CHANNELS.overlayCommandReceived, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.overlayCommandReceived, listener)
+  },
+  onOverlayCursor: (callback: (cursor: OverlayCursor) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, cursor: OverlayCursor): void =>
+      callback(cursor)
+    ipcRenderer.on(IPC_CHANNELS.overlayCursor, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.overlayCursor, listener)
+  },
+  onOverlayClick: (callback: (click: OverlayClick) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, click: OverlayClick): void =>
+      callback(click)
+    ipcRenderer.on(IPC_CHANNELS.overlayClick, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.overlayClick, listener)
   },
   overlayReportHistory: (state: OverlayHistoryState): Promise<boolean> =>
     ipcRenderer.invoke(IPC_CHANNELS.overlayReportHistory, state),

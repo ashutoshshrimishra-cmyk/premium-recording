@@ -14,7 +14,9 @@ import {
   micCommandSchema,
   micStateSchema,
   panelSetLayoutInputSchema,
-  panelLayoutSchema
+  panelLayoutSchema,
+  overlayCommandSchema,
+  overlayCursorSchema
 } from '../src/shared/ipc-schemas'
 
 describe('IPC schemas', () => {
@@ -157,5 +159,24 @@ describe('IPC schemas', () => {
     expect(panelSetLayoutInputSchema.safeParse({ expanded: true }).success).toBe(true)
     expect(panelSetLayoutInputSchema.safeParse({ dock: 'center' }).success).toBe(false)
     expect(panelLayoutSchema.safeParse({ dock: 'right', expanded: false }).success).toBe(true)
+  })
+
+  it('validates cursor effect commands and cursor samples', () => {
+    const settings = {
+      highlight: true,
+      ripple: false,
+      drawPointer: true,
+      highlightColor: 'rgba(255, 214, 10, 0.35)',
+      radius: 28
+    }
+    expect(overlayCommandSchema.safeParse({ type: 'cursorEffect', settings }).success).toBe(true)
+    expect(
+      overlayCommandSchema.safeParse({
+        type: 'cursorEffect',
+        settings: { ...settings, radius: 500 }
+      }).success
+    ).toBe(false)
+    expect(overlayCursorSchema.safeParse({ x: 1, y: 2, inside: true }).success).toBe(true)
+    expect(overlayCursorSchema.safeParse({ x: 1, y: 2 }).success).toBe(false)
   })
 })
