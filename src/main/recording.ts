@@ -7,6 +7,12 @@ let activeStream: WriteStream | undefined
 let startingFile = false
 let activeTempPath: string | undefined
 let activeFinalPath: string | undefined
+let lastSavedPath: string | undefined
+
+/** Path of the most recently finished recording, the only file the audio check may read. */
+export function getLastSavedRecordingPath(): string | undefined {
+  return lastSavedPath
+}
 let streamError: Error | undefined
 
 export function setSelectedSourceId(sourceId: string): void {
@@ -201,10 +207,13 @@ export async function stopRecordingFile(mimeType: string, discard = false): Prom
     const { size } = await stat(tempPath)
     if (size === 0) {
       await unlink(tempPath).catch(() => undefined)
-      throw new Error('Recording produced no data (0 bytes). The screen capture did not deliver any video.')
+      throw new Error(
+        'Recording produced no data (0 bytes). The screen capture did not deliver any video.'
+      )
     }
 
-    return await finalizeWithoutOverwrite(tempPath, finalPath)
+    lastSavedPath = await finalizeWithoutOverwrite(tempPath, finalPath)
+    return lastSavedPath
   } catch (error) {
     if (!discard) await unlink(tempPath).catch(() => undefined)
     throw error

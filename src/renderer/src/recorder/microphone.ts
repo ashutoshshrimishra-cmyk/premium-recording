@@ -1,7 +1,8 @@
 import { NoiseSuppressorWorklet_Name } from '@timephy/rnnoise-wasm'
 // `?worker&url` makes Vite bundle the worklet (wasm is inlined) as a separate asset and return its URL.
 import noiseSuppressorWorkletUrl from '@timephy/rnnoise-wasm/NoiseSuppressorWorklet?worker&url'
-import { RNNOISE_SAMPLE_RATE, peak, shouldBypassProcessed } from './audioMath'
+import { RNNOISE_SAMPLE_RATE, peak } from './audioMath'
+import { createLevelMonitor } from './levelMeter'
 
 export interface MicrophoneLevels {
   raw: number
@@ -60,20 +61,50 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
   )
   const rawTrack = stream.getAudioTracks()[0]
   const deviceLabel = rawTrack?.label ?? ''
-  const plain = (warning?: string): MicrophoneChain => ({
-    track: rawTrack,
-    denoised: false,
-    deviceLabel,
-    warning,
-    contextState: 'none',
-    isBypassed: () => false,
-    setProcessedActive: () => undefined,
-    setMuted: (muted) => {
-      rawTrack.enabled = !muted
-    },
-    getLevels: () => ({ raw: 0, processed: 0 }),
-    dispose: () => stopStream(stream)
-  })
+  const plain = (warning?: string): MicrophoneChain => {
+    // A lightweight tap keeps the meter alive when denoising is unavailable. It is not connected to any output.
+    let meterContext: AudioContext | undefined
+    let analyser: AnalyserNode | undefined
+    let buffer: Float32Array<ArrayBuffer> | undefined
+    try {
+      meterContext = new AudioContext()
+      analyser = meterContext.createAnalyser()
+      analyser.fftSize = 1024
+      meterContext.createMediaStreamSource(new MediaStream([rawTrack])).connect(analyser)
+      buffer = new Float32Array(analyser.fftSize)
+      void meterContext.resume().catch(() => undefined)
+    } catch {
+      analyser = undefined
+    }
+    const monitor = createLevelMonitor({ now: Date.now, failsafe: false })
+    const chain: MicrophoneChain = {
+      track: rawTrack,
+      denoised: false,
+      deviceLabel,
+      warning,
+      contextState: meterContext?.state ?? 'none',
+      isBypassed: () => false,
+      setProcessedActive: () => undefined,
+      setMuted: (muted) => {
+        rawTrack.enabled = !muted
+      },
+      getLevels: () => {
+        let level = 0
+        if (analyser && buffer) {
+          analyser.getFloatTimeDomainData(buffer)
+          level = peak(buffer)
+        }
+        if (meterContext) chain.contextState = meterContext.state
+        const reading = monitor.sample(level, level, false)
+        return { raw: reading.raw, processed: reading.processed }
+      },
+      dispose: () => {
+        void meterContext?.close().catch(() => undefined)
+        stopStream(stream)
+      }
+    }
+    return chain
+  }
 
   if (!rawTrack) {
     stopStream(stream)
@@ -157,22 +188,12 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
     const processedBuffer = new Float32Array(processedAnalyser.fftSize)
     let bypassed = false
     let processedActive = true
-    const startedAt = Date.now()
-    const readLevels = (): MicrophoneLevels => {
-      rawAnalyser.getFloatTimeDomainData(rawBuffer)
-      processedAnalyser.getFloatTimeDomainData(processedBuffer)
-      return { raw: peak(rawBuffer), processed: peak(processedBuffer) }
-    }
+    const monitor = createLevelMonitor({ now: Date.now, failsafe: true })
     const applyRouting = (): void => {
       const useProcessed = processedActive && !bypassed
       procGain.gain.value = useProcessed ? 1 : 0
       rawGain.gain.value = useProcessed ? 0 : 1
     }
-    let peakRaw = 0
-    let peakProcessed = 0
-    // Highest processed level ever seen. The failsafe only fires when the chain never produced sound,
-    // so a denoiser that legitimately silences background noise is not bypassed.
-    let maxProcessed = 0
     const chain: MicrophoneChain = {
       track: processed,
       denoised: true,
@@ -187,21 +208,16 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
         masterGain.gain.value = muted ? 0 : 1
       },
       getLevels: () => {
-        const levels = readLevels()
-        peakRaw = Math.max(peakRaw * 0.9, levels.raw)
-        peakProcessed = Math.max(peakProcessed * 0.9, levels.processed)
-        maxProcessed = Math.max(maxProcessed, levels.processed)
+        rawAnalyser.getFloatTimeDomainData(rawBuffer)
+        processedAnalyser.getFloatTimeDomainData(processedBuffer)
+        const reading = monitor.sample(peak(rawBuffer), peak(processedBuffer), processedActive)
         chain.contextState = ctx.state
-        if (
-          !bypassed &&
-          processedActive &&
-          shouldBypassProcessed(peakRaw, maxProcessed, Date.now() - startedAt)
-        ) {
+        if (reading.justBypassed) {
           bypassed = true
           applyRouting()
           chain.onBypass?.()
         }
-        return { raw: peakRaw, processed: peakProcessed }
+        return { raw: reading.raw, processed: reading.processed }
       },
       dispose: () => {
         stopStream(destination.stream)

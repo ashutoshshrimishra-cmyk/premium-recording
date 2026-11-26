@@ -20,3 +20,21 @@ export function toDisplayRelative(
 export function sameSample(a: CursorSample | undefined, b: CursorSample): boolean {
   return Boolean(a && a.x === b.x && a.y === b.y && a.inside === b.inside)
 }
+
+export interface ScreenRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** True when a screen point lies inside a rectangle (used to ignore clicks on the capture-excluded panel). */
+export function isPointInRect(point: CursorPoint, rect: ScreenRect | undefined): boolean {
+  if (!rect) return false
+  return (
+    point.x >= rect.x &&
+    point.y >= rect.y &&
+    point.x < rect.x + rect.width &&
+    point.y < rect.y + rect.height
+  )
+}

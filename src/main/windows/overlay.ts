@@ -8,6 +8,7 @@ import {
   type WebContents
 } from 'electron'
 import { mkdir, writeFile } from 'node:fs/promises'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
@@ -22,7 +23,10 @@ import type {
 import { screenshotFileName } from '../screenshotName'
 import { log } from '../logger'
 import { startCursorHook, stopCursorHook } from '../cursorHook'
-import { sameSample, toDisplayRelative, type CursorSample } from './cursorMath'
+import { isPointInRect, sameSample, toDisplayRelative, type CursorSample } from './cursorMath'
+import { LOAD_ATTEMPTS, LOAD_TIMEOUT_MS, loadWithRetry, withTimeout } from './loadPolicy'
+import { isSenderOf } from './senderGate'
+import { supportsCaptureExclusion } from './platformCaps'
 import {
   clampToDisplays,
   dockBounds,
@@ -35,7 +39,6 @@ import {
   type Rect
 } from './panelLayout'
 
-const LOAD_TIMEOUT_MS = 3000
 const DEFAULT_DOCK: PanelDock = 'right'
 
 interface PanelPrefs {
@@ -107,6 +110,7 @@ function startCursorFeed(display: Display): void {
     try {
       // The hook reports physical pixels on Windows.
       const dip = process.platform === 'win32' ? screen.screenToDipPoint(click) : click
+      if (isAlive(toolbarWindow) && isPointInRect(dip, toolbarWindow.getBounds())) return
       const sample = toDisplayRelative(dip, display.bounds)
       if (sample.inside) {
         win.webContents.send(IPC_CHANNELS.overlayClick, {
@@ -136,44 +140,61 @@ function keepToolbarOnTop(): void {
  * finished within the timeout, and logs every failure.
  */
 async function loadView(win: BrowserWindow, view: 'overlay' | 'toolbar'): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const failure = new Promise<never>((_resolve, reject) => {
-    win.webContents.on(
-      'did-fail-load',
-      (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-        if (!isMainFrame || errorCode === -3) return
-        const message = `The ${view} window failed to load (${errorCode} ${errorDescription}) ${validatedURL}`
-        log('error', message)
-        reject(new Error(message))
-      }
-    )
-    win.webContents.on('render-process-gone', (_event, details) => {
-      const message = `The ${view} renderer process ended (${details.reason})`
-      log('error', message)
-      reject(new Error(message))
+  const attempt = async (): Promise<void> => {
+    let fail: (error: Error) => void = () => undefined
+    const failure = new Promise<never>((_resolve, reject) => {
+      fail = reject
     })
-    timer = setTimeout(() => {
-      const message = `The ${view} window did not load within ${LOAD_TIMEOUT_MS} ms`
-      log('error', message)
-      reject(new Error(message))
-    }, LOAD_TIMEOUT_MS)
-  })
-  failure.catch(() => undefined)
-  const load = (async (): Promise<void> => {
-    if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-      const url = new URL(process.env.ELECTRON_RENDERER_URL)
-      url.searchParams.set('view', view)
-      await win.loadURL(url.toString())
-    } else {
-      await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } })
+    failure.catch(() => undefined)
+    const onFailLoad = (
+      _event: unknown,
+      errorCode: number,
+      errorDescription: string,
+      validatedURL: string,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame || errorCode === -3) return
+      fail(
+        new Error(
+          `The ${view} window failed to load (${errorCode} ${errorDescription}) ${validatedURL}`
+        )
+      )
     }
-  })()
-  load.catch(() => undefined)
-  try {
-    await Promise.race([load, failure])
-  } finally {
-    if (timer) clearTimeout(timer)
+    const onGone = (_event: unknown, details: { reason: string }): void =>
+      fail(new Error(`The ${view} renderer process ended (${details.reason})`))
+    win.webContents.on('did-fail-load', onFailLoad)
+    win.webContents.on('render-process-gone', onGone)
+    const load = (async (): Promise<void> => {
+      if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+        const url = new URL(process.env.ELECTRON_RENDERER_URL)
+        url.searchParams.set('view', view)
+        await win.loadURL(url.toString())
+      } else {
+        await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } })
+      }
+    })()
+    load.catch(() => undefined)
+    try {
+      await withTimeout(
+        Promise.race([load, failure]),
+        LOAD_TIMEOUT_MS,
+        `The ${view} window did not load within ${LOAD_TIMEOUT_MS} ms`
+      )
+    } finally {
+      if (!win.isDestroyed()) {
+        win.webContents.removeListener('did-fail-load', onFailLoad)
+        win.webContents.removeListener('render-process-gone', onGone)
+      }
+    }
   }
+  await loadWithRetry(
+    async () => {
+      if (win.isDestroyed()) throw new Error(`The ${view} window was closed while loading`)
+      await attempt()
+    },
+    LOAD_ATTEMPTS,
+    (error) => log('warn', `Loading the ${view} window failed, retrying`, error)
+  )
 }
 
 const sharedWebPreferences = {
@@ -266,6 +287,12 @@ async function openToolbarWindow(display: Display): Promise<void> {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Keeps the panel out of the recording and out of screenshots.
   win.setContentProtection(true)
+  if (!supportsCaptureExclusion(process.platform, release())) {
+    log(
+      'warn',
+      `Windows ${release()} cannot exclude the panel from capture; it may appear black in recordings`
+    )
+  }
   win.on('closed', () => {
     if (toolbarWindow === win) toolbarWindow = undefined
   })
@@ -392,15 +419,15 @@ export function toggleAnnotationInteractive(): void {
 }
 
 export function isAnnotationCanvasSender(senderId: number): boolean {
-  return isAlive(canvasWindow) && canvasWindow.webContents.id === senderId
+  return isSenderOf(canvasWindow?.webContents, senderId) && isAlive(canvasWindow)
 }
 
 export function isAnnotationToolbarSender(senderId: number): boolean {
-  return isAlive(toolbarWindow) && toolbarWindow.webContents.id === senderId
+  return isSenderOf(toolbarWindow?.webContents, senderId) && isAlive(toolbarWindow)
 }
 
 export function isRecordingOwnerSender(senderId: number): boolean {
-  return Boolean(recordingOwner && !recordingOwner.isDestroyed() && recordingOwner.id === senderId)
+  return isSenderOf(recordingOwner, senderId)
 }
 
 export function isAnnotationOverlaySender(senderId: number): boolean {

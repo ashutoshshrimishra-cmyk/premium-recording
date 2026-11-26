@@ -61,11 +61,13 @@ import {
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { detectAudioTrack } from '../../shared/containerProbe'
+import { isProbePathAllowed } from './probePath'
 import { getLogPath, log } from '../logger'
 import { BUILD_COMMIT } from '../buildInfo'
 import {
   appendRecordingChunk,
   discardActiveRecording,
+  getLastSavedRecordingPath,
   setSelectedSourceId,
   startRecordingFile,
   stopRecordingFile
@@ -440,8 +442,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.diagnosticsProbeFile, async (event, input: unknown) => {
     validateSender(event)
     const { filePath } = diagnosticsProbeFileInputSchema.parse(input)
-    if (!isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) {
-      throw new Error('Probe path must be an absolute .mp4 or .webm file')
+    if (!isProbePathAllowed(filePath, getLastSavedRecordingPath())) {
+      throw new Error('Only the most recently saved recording can be checked')
     }
     const handle = await open(filePath, 'r')
     try {

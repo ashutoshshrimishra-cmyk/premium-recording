@@ -1,9 +1,15 @@
 import { RecordingChunkWriter } from './chunkWriter'
 import { openMicrophone, type MicrophoneChain } from './microphone'
-import { buildMimeCandidates } from './mimeSelect'
+import {
+  DEFAULT_MAX_PROBES,
+  DEFAULT_PROBE_BUDGET_MS,
+  buildMimeCandidates,
+  selectMimeType,
+  type ProbeOutcome
+} from './mimeSelect'
 import { computeBitrate } from './bitrate'
 import { detectAudioTrack } from '../../../shared/containerProbe'
-import { createEmptyDiagnostics, type ProbeResult, type RecordingDiagnostics } from './diagnostics'
+import { createEmptyDiagnostics, type RecordingDiagnostics } from './diagnostics'
 
 export interface RecorderCallbacks {
   onStatus: (status: 'starting' | 'recording' | 'paused' | 'stopping') => void
@@ -396,27 +402,20 @@ export class ScreenRecorder {
       throw new Error('This system has no supported screen recording format')
     if (!hasAudio) return supported[0]
 
-    const probes: ProbeResult[] = []
-    let firstUnknown: string | undefined
-    let chosen: string | undefined
-    for (const mime of supported) {
-      const result = await this.probeCandidate(stream, mime)
-      probes.push({ mime, result })
-      this.log(`Audio probe ${mime}: ${result}`)
-      if (result === 'present') {
-        chosen = mime
-        break
-      }
-      if (result === 'unknown') firstUnknown ??= mime
+    const outcome = await selectMimeType(supported, (mime) => this.probeCandidate(stream, mime), {
+      maxProbes: DEFAULT_MAX_PROBES,
+      budgetMs: DEFAULT_PROBE_BUDGET_MS,
+      now: Date.now
+    })
+    for (const probe of outcome.probes) this.log(`Audio probe ${probe.mime}: ${probe.result}`)
+    this.diagnostics.audio.probes = outcome.probes
+    if (outcome.audioUnproven && outcome.probes.every((probe) => probe.result !== 'unknown')) {
+      this.warn('Audio could not be added to the recording on this PC')
     }
-    this.diagnostics.audio.probes = probes
-    if (chosen) return chosen
-    if (firstUnknown) return firstUnknown
-    this.warn('Audio could not be added to the recording on this PC')
-    return supported[0]
+    return outcome.mime
   }
 
-  private async probeCandidate(stream: MediaStream, mime: string): Promise<ProbeResult['result']> {
+  private async probeCandidate(stream: MediaStream, mime: string): Promise<ProbeOutcome> {
     try {
       const recorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128_000 })
       const parts: Blob[] = []

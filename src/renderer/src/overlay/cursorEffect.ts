@@ -40,8 +40,22 @@ export function createRippleState(): RippleState {
   return { ripples: [] }
 }
 
-export function addRipple(state: RippleState, x: number, y: number, now: number): void {
+export const RIPPLE_DEDUPE_MS = 250
+export const RIPPLE_DEDUPE_PX = 16
+
+/**
+ * Adds a click ripple unless an equivalent one just started at the same place. The DOM fallback and the
+ * global mouse hook can both report the same click. Returns whether a ripple was added.
+ */
+export function addRipple(state: RippleState, x: number, y: number, now: number): boolean {
+  const duplicate = state.ripples.some(
+    (ripple) =>
+      now - ripple.startedAt < RIPPLE_DEDUPE_MS &&
+      Math.hypot(ripple.x - x, ripple.y - y) <= RIPPLE_DEDUPE_PX
+  )
+  if (duplicate) return false
   state.ripples.push({ x, y, startedAt: now })
+  return true
 }
 
 /** Drops expired ripples and returns the live ones with their progress. */
