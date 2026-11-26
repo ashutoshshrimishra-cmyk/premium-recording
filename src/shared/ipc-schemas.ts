@@ -4,7 +4,8 @@ export const settingsSchema = z.object({
   saveDir: z.string().min(1),
   fps: z.number().int().positive(),
   resolution: z.enum(['1080p', '1440p', '4K']),
-  noiseSuppression: z.boolean()
+  noiseSuppression: z.boolean(),
+  audioDeviceId: z.string().min(1).optional()
 })
 
 export const getSourcesInputSchema = z.void()

@@ -63,7 +63,8 @@ function getSettingsDefaults(): Settings {
     saveDir: join(app.getPath('videos'), 'MyRecorder'),
     fps: 30,
     resolution: '1080p',
-    noiseSuppression: true
+    noiseSuppression: true,
+    audioDeviceId: 'default'
   }
 }
 
@@ -140,13 +141,13 @@ export function registerIpc(): void {
     validateSender(event)
     getSettingsInputSchema.parse(input)
     const result: Settings = {
-      saveDir: ((saved: string): string =>
-        isAbsolute(saved) ? saved : settingsDefaults.saveDir)(
+      saveDir: ((saved: string): string => (isAbsolute(saved) ? saved : settingsDefaults.saveDir))(
         store.get('saveDir', settingsDefaults.saveDir)
       ),
       fps: store.get('fps', settingsDefaults.fps),
       resolution: store.get('resolution', settingsDefaults.resolution),
-      noiseSuppression: store.get('noiseSuppression', settingsDefaults.noiseSuppression)
+      noiseSuppression: store.get('noiseSuppression', settingsDefaults.noiseSuppression),
+      audioDeviceId: store.get('audioDeviceId', 'default') || 'default'
     }
     return getSettingsOutputSchema.parse(result)
   })
@@ -154,7 +155,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.setSettings, (event, input: unknown) => {
     validateSender(event)
     const settings = setSettingsInputSchema.parse(input)
-    store.set(settings)
+    store.set({ ...settings, audioDeviceId: settings.audioDeviceId ?? 'default' })
     return setSettingsOutputSchema.parse(settings)
   })
 
@@ -240,7 +241,11 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.recordingChunk, async (event, input: unknown) => {
     validateSender(event)
     const chunk = recordingChunkInputSchema.parse(input)
-    if (!activeSession || activeSession.id !== chunk.sessionId || activeSession.ownerId !== event.sender.id) {
+    if (
+      !activeSession ||
+      activeSession.id !== chunk.sessionId ||
+      activeSession.ownerId !== event.sender.id
+    ) {
       throw new Error('Recording session is not valid')
     }
     return recordingChunkOutputSchema.parse(await appendRecordingChunk(chunk.data))
@@ -249,7 +254,11 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.recordingStop, async (event, input: unknown) => {
     validateSender(event)
     const stop = recordingStopInputSchema.parse(input)
-    if (!activeSession || activeSession.id !== stop.sessionId || activeSession.ownerId !== event.sender.id) {
+    if (
+      !activeSession ||
+      activeSession.id !== stop.sessionId ||
+      activeSession.ownerId !== event.sender.id
+    ) {
       throw new Error('Recording session is not valid')
     }
     const session = activeSession

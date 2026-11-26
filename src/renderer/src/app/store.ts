@@ -34,7 +34,8 @@ function debounceSettings(state: RecorderState): void {
       saveDir: state.saveDir,
       fps: state.fps,
       resolution: state.resolution,
-      noiseSuppression: state.noiseSuppression
+      noiseSuppression: state.noiseSuppression,
+      audioDeviceId: state.audioDeviceId
     }
     void window.api.setSettings(settings)
   }, 300)
@@ -45,7 +46,7 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
   selectedSourceId: '',
   resolution: '1080p',
   fps: 30,
-  audioDeviceId: 'none',
+  audioDeviceId: 'default',
   noiseSuppression: true,
   saveDir: '',
   loaded: false,
@@ -67,9 +68,12 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
     set({ saveDir })
     debounceSettings(get())
   },
-  setAudioDeviceId: (audioDeviceId) => set({ audioDeviceId }),
+  setAudioDeviceId: (audioDeviceId) => {
+    set({ audioDeviceId })
+    debounceSettings(get())
+  },
   loadSettings: async () => {
     const settings = await window.api.getSettings()
-    set({ ...settings, loaded: true })
+    set({ ...settings, audioDeviceId: settings.audioDeviceId ?? 'default', loaded: true })
   }
 }))

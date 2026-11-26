@@ -112,4 +112,13 @@ describe('IPC schemas', () => {
     expect(setSettingsInputSchema.safeParse({ fps: -1 }).success).toBe(false)
     expect(setSettingsOutputSchema.safeParse({ fps: '30' }).success).toBe(false)
   })
+
+  it('keeps old settings valid and accepts an optional microphone id', () => {
+    const base = { saveDir: '/tmp', fps: 30, resolution: '1080p', noiseSuppression: true }
+    expect(setSettingsInputSchema.safeParse(base).success).toBe(true)
+    expect(setSettingsInputSchema.safeParse({ ...base, audioDeviceId: 'default' }).success).toBe(
+      true
+    )
+    expect(setSettingsInputSchema.safeParse({ ...base, audioDeviceId: '' }).success).toBe(false)
+  })
 })

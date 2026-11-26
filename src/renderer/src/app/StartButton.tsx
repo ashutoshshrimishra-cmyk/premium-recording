@@ -46,8 +46,7 @@ export const StartButton = memo(function StartButton() {
   }
 
   const updateElapsed = (): void => {
-    const activeMs =
-      statusRef.current === 'recording' ? Date.now() - activeStartedAtRef.current : 0
+    const activeMs = statusRef.current === 'recording' ? Date.now() - activeStartedAtRef.current : 0
     setElapsed(Math.floor((accumulatedMsRef.current + activeMs) / 1000))
   }
 
@@ -69,6 +68,7 @@ export const StartButton = memo(function StartButton() {
     const recorder = new ScreenRecorder({
       onStatus: updateStatus,
       onError: setMessage,
+      onWarning: setMessage,
       onMimeType: setMimeType,
       onRealFps: setRealFps,
       onFile: (filePath) => setMessage(`Saved: ${filePath}`),

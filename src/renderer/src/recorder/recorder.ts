@@ -1,8 +1,10 @@
 import { RecordingChunkWriter } from './chunkWriter'
+import { openMicrophone, type MicrophoneChain } from './microphone'
 
 export interface RecorderCallbacks {
   onStatus: (status: 'starting' | 'recording' | 'paused' | 'stopping') => void
   onError: (message: string) => void
+  onWarning?: (message: string) => void
   onMimeType: (mimeType: string) => void
   onRealFps: (fps: number) => void
   onFile: (filePath: string) => void
@@ -38,6 +40,7 @@ export class ScreenRecorder {
   private chunkWriter?: RecordingChunkWriter
   private sessionId?: string
   private removeStopListener?: () => void
+  private microphone?: MicrophoneChain
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -85,39 +88,48 @@ export class ScreenRecorder {
       throw new Error('Recording was cancelled')
     }
 
-    let microphoneStream: MediaStream | undefined
-    try {
-      if (options.audioDeviceId !== 'none') {
-        microphoneStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(options.audioDeviceId && options.audioDeviceId !== 'default'
-              ? { deviceId: { exact: options.audioDeviceId } }
-              : {}),
-            noiseSuppression: options.noiseSuppression,
-            echoCancellation: true,
-            autoGainControl: true
-          },
-          video: false
+    let microphone: MicrophoneChain | undefined
+    if (options.audioDeviceId !== 'none') {
+      try {
+        microphone = await openMicrophone({
+          deviceId: options.audioDeviceId,
+          noiseSuppression: options.noiseSuppression
         })
+      } catch (error) {
+        displayStream.getTracks().forEach((track) => track.stop())
+        this.cleanup()
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`Could not use the selected microphone: ${detail}`, { cause: error })
       }
-    } catch (error) {
-      displayStream.getTracks().forEach((track) => track.stop())
-      this.cleanup()
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`Could not use the selected microphone: ${detail}`, { cause: error })
     }
+    this.microphone = microphone
 
     if (this.stopped) {
       displayStream.getTracks().forEach((track) => track.stop())
-      microphoneStream?.getTracks().forEach((track) => track.stop())
+      microphone?.dispose()
+      this.microphone = undefined
       throw new Error('Recording was cancelled')
     }
 
     const stream = new MediaStream([
       ...displayStream.getVideoTracks(),
-      ...(microphoneStream?.getAudioTracks() ?? [])
+      ...(microphone ? [microphone.track] : [])
     ])
     this.stream = stream
+    if (options.audioDeviceId !== 'none' && stream.getAudioTracks().length === 0) {
+      this.stopTracks()
+      this.cleanup()
+      throw new Error(
+        'No microphone audio was captured. Check the microphone selection and permission.'
+      )
+    }
+    if (microphone?.warning) this.callbacks.onWarning?.(microphone.warning)
+    if (microphone) {
+      microphone.track.onended = (): void => {
+        if (!this.stopped)
+          this.callbacks.onWarning?.('The microphone was disconnected. Audio may be missing.')
+      }
+    }
     if (this.stopped) {
       this.stopTracks()
       throw new Error('Recording was cancelled')
@@ -227,7 +239,10 @@ export class ScreenRecorder {
         return
       }
       if (this.recorderStarted) {
-        this.finishFallback ??= setTimeout(() => void this.finishStop(this.mediaRecorder?.mimeType || 'video/webm'), 1000)
+        this.finishFallback ??= setTimeout(
+          () => void this.finishStop(this.mediaRecorder?.mimeType || 'video/webm'),
+          1000
+        )
         return
       }
     }
@@ -238,7 +253,11 @@ export class ScreenRecorder {
     for (const mimeType of MIME_TYPES) {
       if (!MediaRecorder.isTypeSupported(mimeType)) continue
       try {
-        return new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitrate })
+        return new MediaRecorder(stream, {
+          mimeType,
+          videoBitsPerSecond: bitrate,
+          ...(stream.getAudioTracks().length > 0 ? { audioBitsPerSecond: 192_000 } : {})
+        })
       } catch {
         // Chromium can report support but still reject a specific track/codec combination.
       }
@@ -301,6 +320,8 @@ export class ScreenRecorder {
   private stopTracks(): void {
     this.stream?.getTracks().forEach((track) => track.stop())
     this.mediaRecorder?.stream.getTracks().forEach((track) => track.stop())
+    this.microphone?.dispose()
+    this.microphone = undefined
   }
 
   private measureFrames(video: VideoFrameCallbackVideo): void {
@@ -311,9 +332,7 @@ export class ScreenRecorder {
       this.frameTimes = this.frameTimes.filter((time) => now - time <= 1000)
       if (this.frameTimes.length >= 2) {
         const elapsed = now - this.frameTimes[0]
-        this.callbacks.onRealFps(
-          elapsed > 0 ? ((this.frameTimes.length - 1) * 1000) / elapsed : 0
-        )
+        this.callbacks.onRealFps(elapsed > 0 ? ((this.frameTimes.length - 1) * 1000) / elapsed : 0)
       }
       video.requestVideoFrameCallback(callback)
     }

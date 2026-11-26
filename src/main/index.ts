@@ -54,6 +54,24 @@ function createWindow(): void {
 app.whenReady().then(() => {
   registerIpc()
   registerOverlayShortcuts()
+  const isOwnOrigin = (origin: string): boolean => {
+    if (origin.startsWith('file://')) return true
+    const rendererUrl = process.env.ELECTRON_RENDERER_URL
+    if (!is.dev || !rendererUrl) return false
+    try {
+      return new URL(origin).origin === new URL(rendererUrl).origin
+    } catch {
+      return false
+    }
+  }
+  const allowedPermissions = new Set<string>(['media', 'audioCapture', 'display-capture'])
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    callback(allowedPermissions.has(permission) && isOwnOrigin(details.requestingUrl))
+  })
+  session.defaultSession.setPermissionCheckHandler(
+    (_contents, permission, requestingOrigin) =>
+      allowedPermissions.has(permission) && isOwnOrigin(requestingOrigin)
+  )
   session.defaultSession.setDisplayMediaRequestHandler(
     async (_request, callback) => {
       try {
