@@ -43,7 +43,7 @@ export async function openAnnotationOverlay(
     hasShadow: false,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -65,6 +65,7 @@ export async function openAnnotationOverlay(
     url.searchParams.set('view', 'overlay')
     await win.loadURL(url.toString())
   } else {
+    // Match the main window's packaged renderer path: out/main -> out/renderer.
     await win.loadFile(join(__dirname, '../renderer/index.html'), {
       query: { view: 'overlay' }
     })
