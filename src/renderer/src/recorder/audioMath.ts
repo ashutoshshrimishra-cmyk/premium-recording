@@ -69,3 +69,20 @@ export function rnnoiseLatencyMs(
 export function meterLevelFromSamples(samples: ArrayLike<number>): number {
   return dbToMeter(amplitudeToDb(rms(samples)))
 }
+
+export const FAILSAFE_DELAY_MS = 2000
+export const FAILSAFE_RAW_MIN = 0.01
+export const FAILSAFE_PROCESSED_MAX = 0.002
+
+/** True when the processed signal is silent although the raw microphone has signal. */
+export function shouldBypassProcessed(
+  rawLevel: number,
+  processedLevel: number,
+  elapsedMs: number
+): boolean {
+  return (
+    elapsedMs >= FAILSAFE_DELAY_MS &&
+    rawLevel > FAILSAFE_RAW_MIN &&
+    processedLevel < FAILSAFE_PROCESSED_MAX
+  )
+}

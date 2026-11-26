@@ -16,5 +16,9 @@ export const IPC_CHANNELS = {
   overlayCommandReceived: 'overlay-command-received',
   overlayReportHistory: 'overlay-report-history',
   overlayHistoryChanged: 'overlay-history-changed',
-  overlaySaveScreenshot: 'overlay-save-screenshot'
+  overlaySaveScreenshot: 'overlay-save-screenshot',
+  diagnosticsLog: 'diagnostics-log',
+  diagnosticsGetInfo: 'diagnostics-get-info',
+  diagnosticsShowLog: 'diagnostics-show-log',
+  diagnosticsProbeFile: 'diagnostics-probe-file'
 } as const

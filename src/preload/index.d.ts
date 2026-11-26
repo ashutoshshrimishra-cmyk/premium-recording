@@ -15,7 +15,9 @@ import type {
   OverlayRequestStopOutput,
   OverlayCommand,
   OverlayHistoryState,
-  OverlaySaveScreenshotOutput
+  OverlaySaveScreenshotOutput,
+  DiagnosticsInfo,
+  DiagnosticsProbeFileOutput
 } from '../shared/ipc-schemas'
 
 interface RecorderApi {
@@ -36,6 +38,10 @@ interface RecorderApi {
   overlayReportHistory(state: OverlayHistoryState): Promise<boolean>
   onOverlayHistoryChanged(callback: (state: OverlayHistoryState) => void): () => void
   overlaySaveScreenshot(): Promise<OverlaySaveScreenshotOutput>
+  diagnosticsLog(line: string): Promise<boolean>
+  diagnosticsGetInfo(): Promise<DiagnosticsInfo>
+  diagnosticsShowLog(): Promise<boolean>
+  diagnosticsProbeFile(filePath: string): Promise<DiagnosticsProbeFileOutput>
   onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void
 }
 

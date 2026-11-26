@@ -5,9 +5,12 @@ import {
   dialog,
   ipcMain,
   screen,
+  shell,
   type IpcMainInvokeEvent
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { open } from 'node:fs/promises'
+import { release } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import Store from 'electron-store'
 import {
@@ -39,9 +42,20 @@ import {
   overlayReportHistoryOutputSchema,
   overlaySaveScreenshotInputSchema,
   overlaySaveScreenshotOutputSchema,
+  diagnosticsLogInputSchema,
+  diagnosticsLogOutputSchema,
+  diagnosticsGetInfoInputSchema,
+  diagnosticsGetInfoOutputSchema,
+  diagnosticsShowLogInputSchema,
+  diagnosticsShowLogOutputSchema,
+  diagnosticsProbeFileInputSchema,
+  diagnosticsProbeFileOutputSchema,
   type Settings
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import { detectAudioTrack } from '../../shared/containerProbe'
+import { getLogPath, log } from '../logger'
+import { BUILD_COMMIT } from '../buildInfo'
 import {
   appendRecordingChunk,
   discardActiveRecording,
@@ -333,5 +347,50 @@ export function registerIpc(): void {
     }
     overlaySaveScreenshotInputSchema.parse(input)
     return overlaySaveScreenshotOutputSchema.parse({ filePath: await saveAnnotationScreenshot() })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.diagnosticsLog, (event, input: unknown) => {
+    validateSender(event)
+    const { line } = diagnosticsLogInputSchema.parse(input)
+    log('info', `[renderer] ${line}`)
+    return diagnosticsLogOutputSchema.parse(true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.diagnosticsGetInfo, (event, input: unknown) => {
+    validateSender(event)
+    diagnosticsGetInfoInputSchema.parse(input)
+    return diagnosticsGetInfoOutputSchema.parse({
+      logPath: getLogPath(),
+      version: app.getVersion(),
+      commit: BUILD_COMMIT,
+      platform: process.platform,
+      osRelease: release()
+    })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.diagnosticsShowLog, (event, input: unknown) => {
+    validateSender(event)
+    diagnosticsShowLogInputSchema.parse(input)
+    shell.showItemInFolder(getLogPath())
+    return diagnosticsShowLogOutputSchema.parse(true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.diagnosticsProbeFile, async (event, input: unknown) => {
+    validateSender(event)
+    const { filePath } = diagnosticsProbeFileInputSchema.parse(input)
+    if (!isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) {
+      throw new Error('Probe path must be an absolute .mp4 or .webm file')
+    }
+    const handle = await open(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(256 * 1024)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      const mime = /\.webm$/i.test(filePath) ? 'video/webm' : 'video/mp4'
+      const result = detectAudioTrack(new Uint8Array(buffer.subarray(0, bytesRead)), mime)
+      log('info', `Saved file audio check: ${result} (${filePath})`)
+      return diagnosticsProbeFileOutputSchema.parse(result)
+    } finally {
+      await handle.close()
+    }
   })
 }

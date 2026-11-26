@@ -10,6 +10,7 @@ import {
   peak,
   rms,
   rnnoiseLatencyMs,
+  shouldBypassProcessed,
   smoothMeter
 } from '../src/renderer/src/recorder/audioMath'
 
@@ -52,5 +53,16 @@ describe('audioMath', () => {
   it('gives silence a zero meter level', () => {
     expect(meterLevelFromSamples(new Float32Array(256))).toBe(0)
     expect(meterLevelFromSamples(new Float32Array(256).fill(1))).toBe(1)
+  })
+})
+
+describe('shouldBypassProcessed', () => {
+  it('bypasses when processed is silent but raw has signal after 2 s', () => {
+    expect(shouldBypassProcessed(0.05, 0.0001, 2500)).toBe(true)
+  })
+  it('waits for the delay and ignores healthy or silent inputs', () => {
+    expect(shouldBypassProcessed(0.05, 0.0001, 1000)).toBe(false)
+    expect(shouldBypassProcessed(0.05, 0.02, 3000)).toBe(false)
+    expect(shouldBypassProcessed(0.001, 0.0, 3000)).toBe(false)
   })
 })

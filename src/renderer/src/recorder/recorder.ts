@@ -1,5 +1,9 @@
 import { RecordingChunkWriter } from './chunkWriter'
 import { openMicrophone, type MicrophoneChain } from './microphone'
+import { buildMimeCandidates } from './mimeSelect'
+import { computeBitrate } from './bitrate'
+import { detectAudioTrack } from '../../../shared/containerProbe'
+import { createEmptyDiagnostics, type ProbeResult, type RecordingDiagnostics } from './diagnostics'
 
 export interface RecorderCallbacks {
   onStatus: (status: 'starting' | 'recording' | 'paused' | 'stopping') => void
@@ -9,6 +13,7 @@ export interface RecorderCallbacks {
   onRealFps: (fps: number) => void
   onFile: (filePath: string) => void
   onStopped: () => void
+  onDiagnostics?: (diagnostics: RecordingDiagnostics) => void
 }
 
 interface VideoFrameCallbackVideo extends HTMLVideoElement {
@@ -17,15 +22,12 @@ interface VideoFrameCallbackVideo extends HTMLVideoElement {
   ): number
 }
 
-const MIME_TYPES = [
-  'video/mp4;codecs=avc1,aac',
-  'video/mp4;codecs=avc1',
-  'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp8,opus',
-  'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8',
-  'video/webm'
-] as const
+const PROBE_DURATION_MS = 800
+const DIAGNOSTICS_INTERVAL_MS = 500
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export class ScreenRecorder {
   private stream?: MediaStream
@@ -41,6 +43,12 @@ export class ScreenRecorder {
   private sessionId?: string
   private removeStopListener?: () => void
   private microphone?: MicrophoneChain
+  private diagnostics: RecordingDiagnostics = createEmptyDiagnostics({
+    version: __APP_VERSION__,
+    commit: __BUILD_COMMIT__
+  })
+  private diagnosticsTimer?: ReturnType<typeof setInterval>
+  private lastRealFps = 0
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -58,7 +66,19 @@ export class ScreenRecorder {
     this.recorderStarted = false
     this.fileStarted = false
     this.sessionId = undefined
+    this.lastRealFps = 0
+    this.diagnostics = createEmptyDiagnostics({
+      version: __APP_VERSION__,
+      commit: __BUILD_COMMIT__
+    })
+    this.diagnostics.video.requestedW = options.width
+    this.diagnostics.video.requestedH = options.height
+    this.diagnostics.video.requestedFps = options.fps
+    this.diagnostics.audio.requested = options.audioDeviceId !== 'none'
     this.callbacks.onStatus('starting')
+    this.log(
+      `Recording requested: v${__APP_VERSION__} (${__BUILD_COMMIT__}) ${options.width}x${options.height}@${options.fps} audio=${options.audioDeviceId} denoise=${options.noiseSuppression}`
+    )
 
     await window.api.recordingSelectSource({ sourceId: options.sourceId })
     let displayStream: MediaStream
@@ -67,7 +87,8 @@ export class ScreenRecorder {
         video: {
           frameRate: { ideal: options.fps, max: options.fps },
           width: { ideal: options.width },
-          height: { ideal: options.height }
+          height: { ideal: options.height },
+          cursor: 'always'
         },
         audio: false
       } as MediaStreamConstraints)
@@ -123,8 +144,12 @@ export class ScreenRecorder {
         'No microphone audio was captured. Check the microphone selection and permission.'
       )
     }
-    if (microphone?.warning) this.callbacks.onWarning?.(microphone.warning)
+    if (microphone?.warning) this.warn(microphone.warning)
     if (microphone) {
+      microphone.onBypass = (): void => {
+        this.warn('Noise removal produced no sound, so the raw microphone signal is used instead.')
+        this.log('Audio failsafe: switched to the raw microphone signal')
+      }
       microphone.track.onended = (): void => {
         if (!this.stopped)
           this.callbacks.onWarning?.('The microphone was disconnected. Audio may be missing.')
@@ -145,16 +170,35 @@ export class ScreenRecorder {
     const width = settings.width ?? options.width
     const height = settings.height ?? options.height
     const fps = settings.frameRate ?? options.fps
-    const bitrate = Math.min(40_000_000, Math.round(width * height * fps * 0.08))
+    videoTrack.contentHint = 'detail'
+    const hasAudio = stream.getAudioTracks().length > 0
     let recorder: MediaRecorder
+    let bitrate: number
     try {
-      recorder = this.createMediaRecorder(stream, bitrate)
+      const mime = await this.chooseMimeType(stream, hasAudio)
+      bitrate = computeBitrate(width, height, fps, mime)
+      recorder = this.createMediaRecorder(stream, mime, bitrate, hasAudio)
     } catch (error) {
       this.stopTracks()
       this.cleanup()
       throw error
     }
     const mimeType = recorder.mimeType
+    this.diagnostics.video = {
+      ...this.diagnostics.video,
+      actualW: width,
+      actualH: height,
+      actualFps: fps,
+      bitrate,
+      mime: mimeType,
+      contentHint: videoTrack.contentHint
+    }
+    if (width < options.width || height < options.height) {
+      this.warn(
+        `The screen delivered ${width}x${height}, below the requested ${options.width}x${options.height}.`
+      )
+    }
+    this.log(`Recorder created: ${mimeType} ${width}x${height}@${fps} ${bitrate} bps`)
     this.mediaRecorder = recorder
     this.callbacks.onMimeType(mimeType)
     this.removeStopListener = window.api.onRecordingStopRequested(() => void this.stop())
@@ -208,6 +252,12 @@ export class ScreenRecorder {
 
       recorder.start(1000)
       this.recorderStarted = true
+      try {
+        await videoTrack.applyConstraints({ frameRate: options.fps })
+      } catch {
+        // Some capture sources reject frame rate changes after start.
+      }
+      this.startDiagnostics()
       this.callbacks.onStatus('recording')
     } catch (error) {
       this.stopTracks()
@@ -249,20 +299,100 @@ export class ScreenRecorder {
     await this.finishStop(this.mediaRecorder?.mimeType || 'video/webm')
   }
 
-  private createMediaRecorder(stream: MediaStream, bitrate: number): MediaRecorder {
-    for (const mimeType of MIME_TYPES) {
-      if (!MediaRecorder.isTypeSupported(mimeType)) continue
-      try {
-        return new MediaRecorder(stream, {
-          mimeType,
-          videoBitsPerSecond: bitrate,
-          ...(stream.getAudioTracks().length > 0 ? { audioBitsPerSecond: 192_000 } : {})
-        })
-      } catch {
-        // Chromium can report support but still reject a specific track/codec combination.
-      }
+  private log(line: string): void {
+    void window.api.diagnosticsLog(line.slice(0, 1900)).catch(() => undefined)
+  }
+
+  private warn(message: string): void {
+    this.log(`WARNING: ${message}`)
+    this.callbacks.onWarning?.(message)
+  }
+
+  private emitDiagnostics(): void {
+    const d = this.diagnostics
+    const mic = this.microphone
+    if (mic) {
+      const levels = mic.getLevels()
+      d.audio.rawLevel = levels.raw
+      d.audio.processedLevel = levels.processed
+      d.audio.context = mic.contextState
+      d.audio.denoised = mic.denoised
+      d.audio.bypassed = mic.isBypassed()
+      d.audio.deviceLabel = mic.deviceLabel
+      d.audio.trackState = mic.track.readyState
+      d.audio.muted = !mic.track.enabled || mic.track.muted
     }
-    throw new Error('This system has no supported screen recording format')
+    d.video.actualFps = this.lastRealFps || d.video.actualFps
+    this.callbacks.onDiagnostics?.({ ...d, video: { ...d.video }, audio: { ...d.audio } })
+  }
+
+  private startDiagnostics(): void {
+    this.emitDiagnostics()
+    this.diagnosticsTimer = setInterval(() => this.emitDiagnostics(), DIAGNOSTICS_INTERVAL_MS)
+  }
+
+  /** Records a short clip with each candidate and keeps the first one whose output really carries audio. */
+  private async chooseMimeType(stream: MediaStream, hasAudio: boolean): Promise<string> {
+    const supported = buildMimeCandidates(hasAudio).filter((mime) =>
+      MediaRecorder.isTypeSupported(mime)
+    )
+    if (supported.length === 0)
+      throw new Error('This system has no supported screen recording format')
+    if (!hasAudio) return supported[0]
+
+    const probes: ProbeResult[] = []
+    let firstUnknown: string | undefined
+    let chosen: string | undefined
+    for (const mime of supported) {
+      const result = await this.probeCandidate(stream, mime)
+      probes.push({ mime, result })
+      this.log(`Audio probe ${mime}: ${result}`)
+      if (result === 'present') {
+        chosen = mime
+        break
+      }
+      if (result === 'unknown') firstUnknown ??= mime
+    }
+    this.diagnostics.audio.probes = probes
+    if (chosen) return chosen
+    if (firstUnknown) return firstUnknown
+    this.warn('Audio could not be added to the recording on this PC')
+    return supported[0]
+  }
+
+  private async probeCandidate(stream: MediaStream, mime: string): Promise<ProbeResult['result']> {
+    try {
+      const recorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128_000 })
+      const parts: Blob[] = []
+      recorder.ondataavailable = (event): void => {
+        if (event.data.size > 0) parts.push(event.data)
+      }
+      const stopped = new Promise<void>((resolve) => {
+        recorder.onstop = (): void => resolve()
+        recorder.onerror = (): void => resolve()
+      })
+      recorder.start(250)
+      await sleep(PROBE_DURATION_MS)
+      if (recorder.state !== 'inactive') recorder.stop()
+      await Promise.race([stopped, sleep(1500)])
+      const bytes = new Uint8Array(await new Blob(parts).arrayBuffer())
+      return detectAudioTrack(bytes.subarray(0, 256 * 1024), mime)
+    } catch {
+      return 'error'
+    }
+  }
+
+  private createMediaRecorder(
+    stream: MediaStream,
+    mimeType: string,
+    bitrate: number,
+    hasAudio: boolean
+  ): MediaRecorder {
+    return new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: bitrate,
+      ...(hasAudio ? { audioBitsPerSecond: 192_000 } : {})
+    })
   }
 
   private async finishStop(mimeType: string): Promise<void> {
@@ -285,7 +415,10 @@ export class ScreenRecorder {
           mimeType,
           discard: Boolean(chunkWriteError)
         })
-        if (!chunkWriteError) this.callbacks.onFile(result.filePath)
+        if (!chunkWriteError) {
+          this.callbacks.onFile(result.filePath)
+          await this.verifySavedFile(result.filePath)
+        }
       } catch (error) {
         if (!chunkWriteError) {
           this.callbacks.onError(
@@ -298,7 +431,28 @@ export class ScreenRecorder {
     this.callbacks.onStopped()
   }
 
+  private async verifySavedFile(filePath: string): Promise<void> {
+    if (!this.diagnostics.audio.requested) return
+    try {
+      const probe = await window.api.diagnosticsProbeFile(filePath)
+      this.diagnostics.audio.fileHasAudio =
+        probe === 'present' ? 'yes' : probe === 'absent' ? 'no' : 'unknown'
+      this.log(`Saved file audio check: ${probe}`)
+      if (probe === 'absent') this.warn('The saved file has no audio track.')
+    } catch (error) {
+      this.diagnostics.audio.fileHasAudio = 'unknown'
+      this.log(`Saved file audio check failed: ${String(error)}`)
+    }
+    this.callbacks.onDiagnostics?.({
+      ...this.diagnostics,
+      video: { ...this.diagnostics.video },
+      audio: { ...this.diagnostics.audio }
+    })
+  }
+
   private cleanup(): void {
+    if (this.diagnosticsTimer) clearInterval(this.diagnosticsTimer)
+    this.diagnosticsTimer = undefined
     this.removeStopListener?.()
     this.removeStopListener = undefined
     if (this.finishFallback) clearTimeout(this.finishFallback)
@@ -332,7 +486,9 @@ export class ScreenRecorder {
       this.frameTimes = this.frameTimes.filter((time) => now - time <= 1000)
       if (this.frameTimes.length >= 2) {
         const elapsed = now - this.frameTimes[0]
-        this.callbacks.onRealFps(elapsed > 0 ? ((this.frameTimes.length - 1) * 1000) / elapsed : 0)
+        const realFps = elapsed > 0 ? ((this.frameTimes.length - 1) * 1000) / elapsed : 0
+        this.lastRealFps = realFps
+        this.callbacks.onRealFps(realFps)
       }
       video.requestVideoFrameCallback(callback)
     }

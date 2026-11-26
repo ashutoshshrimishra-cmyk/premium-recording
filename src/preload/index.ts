@@ -17,7 +17,9 @@ import type {
   OverlayRequestStopOutput,
   OverlayCommand,
   OverlayHistoryState,
-  OverlaySaveScreenshotOutput
+  OverlaySaveScreenshotOutput,
+  DiagnosticsInfo,
+  DiagnosticsProbeFileOutput
 } from '../shared/ipc-schemas'
 
 const api = {
@@ -67,6 +69,14 @@ const api = {
   },
   overlaySaveScreenshot: (): Promise<OverlaySaveScreenshotOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.overlaySaveScreenshot, undefined),
+  diagnosticsLog: (line: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsLog, { line }),
+  diagnosticsGetInfo: (): Promise<DiagnosticsInfo> =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGetInfo, undefined),
+  diagnosticsShowLog: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsShowLog, undefined),
+  diagnosticsProbeFile: (filePath: string): Promise<DiagnosticsProbeFileOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsProbeFile, { filePath }),
   onOverlayInteractiveChanged: (callback: (interactive: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, interactive: boolean): void =>
       callback(interactive)

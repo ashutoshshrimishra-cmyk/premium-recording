@@ -131,6 +131,21 @@ export const overlayReportHistoryOutputSchema = z.boolean()
 export const overlaySaveScreenshotInputSchema = z.void()
 export const overlaySaveScreenshotOutputSchema = z.object({ filePath: z.string().min(1) })
 
+export const diagnosticsLogInputSchema = z.object({ line: z.string().max(2000) })
+export const diagnosticsLogOutputSchema = z.boolean()
+export const diagnosticsGetInfoInputSchema = z.void()
+export const diagnosticsGetInfoOutputSchema = z.object({
+  logPath: z.string(),
+  version: z.string(),
+  commit: z.string(),
+  platform: z.string(),
+  osRelease: z.string()
+})
+export const diagnosticsShowLogInputSchema = z.void()
+export const diagnosticsShowLogOutputSchema = z.boolean()
+export const diagnosticsProbeFileInputSchema = z.object({ filePath: z.string().min(1) })
+export const diagnosticsProbeFileOutputSchema = z.enum(['present', 'absent', 'unknown'])
+
 export type Settings = z.infer<typeof settingsSchema>
 export type GetSourcesInput = z.infer<typeof getSourcesInputSchema>
 export type GetSourcesOutput = z.infer<typeof getSourcesOutputSchema>
@@ -158,4 +173,6 @@ export type OverlayShape = z.infer<typeof overlayShapeSchema>
 export type OverlayStamp = z.infer<typeof overlayStampSchema>
 export type OverlayCommand = z.infer<typeof overlayCommandSchema>
 export type OverlayHistoryState = z.infer<typeof overlayHistoryStateSchema>
+export type DiagnosticsInfo = z.infer<typeof diagnosticsGetInfoOutputSchema>
+export type DiagnosticsProbeFileOutput = z.infer<typeof diagnosticsProbeFileOutputSchema>
 export type OverlaySaveScreenshotOutput = z.infer<typeof overlaySaveScreenshotOutputSchema>

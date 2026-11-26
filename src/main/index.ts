@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerIpc } from './ipc'
+import { getLogPath, log } from './logger'
+import { BUILD_COMMIT, BUILD_TIME } from './buildInfo'
 import { discardActiveRecording, getSelectedSourceId, setSelectedSourceId } from './recording'
 import {
   closeAnnotationOverlay,
@@ -52,6 +54,15 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  log(
+    'info',
+    `Startup v${app.getVersion()} (${BUILD_COMMIT}) built ${BUILD_TIME || 'n/a'} | electron ${process.versions.electron} chrome ${process.versions.chrome} | ${process.platform} ${process.getSystemVersion()} | log ${getLogPath()}`
+  )
+  try {
+    log('info', `GPU feature status: ${JSON.stringify(app.getGPUFeatureStatus())}`)
+  } catch (error) {
+    log('warn', 'Could not read GPU feature status', error)
+  }
   registerIpc()
   registerOverlayShortcuts()
   const isOwnOrigin = (origin: string): boolean => {
@@ -90,7 +101,7 @@ app.whenReady().then(() => {
         callback(source ? { video: source } : {})
       } catch (error) {
         setSelectedSourceId('')
-        console.error('Could not resolve the selected capture source', error)
+        log('error', 'Could not resolve the selected capture source', error)
         callback({})
       }
     },

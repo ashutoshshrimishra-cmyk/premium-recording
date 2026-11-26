@@ -1,14 +1,28 @@
 import { NoiseSuppressorWorklet_Name } from '@timephy/rnnoise-wasm'
 // `?worker&url` makes Vite bundle the worklet (wasm is inlined) as a separate asset and return its URL.
 import noiseSuppressorWorkletUrl from '@timephy/rnnoise-wasm/NoiseSuppressorWorklet?worker&url'
-import { RNNOISE_SAMPLE_RATE } from './audioMath'
+import { RNNOISE_SAMPLE_RATE, peak, shouldBypassProcessed } from './audioMath'
+
+export interface MicrophoneLevels {
+  raw: number
+  processed: number
+}
 
 export interface MicrophoneChain {
   /** The track to record. Processed when `denoised` is true, otherwise the raw microphone track. */
   track: MediaStreamTrack
   denoised: boolean
+  deviceLabel: string
   /** Set when AI noise removal was requested but could not be used. */
   warning?: string
+  contextState: string
+  /** True once the failsafe switched the output from the processed chain to the raw signal. */
+  isBypassed: () => boolean
+  setProcessedActive: (active: boolean) => void
+  setMuted: (muted: boolean) => void
+  getLevels: () => MicrophoneLevels
+  /** Called once when the failsafe bypasses the processed chain. */
+  onBypass?: () => void
   dispose: () => void
 }
 
@@ -45,10 +59,19 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
     micConstraints(options.deviceId, options.noiseSuppression)
   )
   const rawTrack = stream.getAudioTracks()[0]
+  const deviceLabel = rawTrack?.label ?? ''
   const plain = (warning?: string): MicrophoneChain => ({
     track: rawTrack,
     denoised: false,
+    deviceLabel,
     warning,
+    contextState: 'none',
+    isBypassed: () => false,
+    setProcessedActive: () => undefined,
+    setMuted: (muted) => {
+      rawTrack.enabled = !muted
+    },
+    getLevels: () => ({ raw: 0, processed: 0 }),
     dispose: () => stopStream(stream)
   })
 
@@ -62,7 +85,13 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
   try {
     context = new AudioContext({ sampleRate: RNNOISE_SAMPLE_RATE, latencyHint: 'interactive' })
     await context.audioWorklet.addModule(noiseSuppressorWorkletUrl)
-    await context.resume()
+    await Promise.race([
+      context.resume(),
+      new Promise<void>((resolve) => setTimeout(resolve, 2000))
+    ])
+    if (context.state !== 'running') {
+      throw new Error(`The audio context is ${context.state}`)
+    }
 
     const source = context.createMediaStreamSource(new MediaStream([rawTrack]))
     const highPass = context.createBiquadFilter()
@@ -97,25 +126,90 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
     limiter.release.value = 0.1
 
     const destination = context.createMediaStreamDestination()
+    const rawAnalyser = context.createAnalyser()
+    const processedAnalyser = context.createAnalyser()
+    rawAnalyser.fftSize = 1024
+    processedAnalyser.fftSize = 1024
+    const rawGain = context.createGain()
+    rawGain.gain.value = 0
+    const procGain = context.createGain()
+    procGain.gain.value = 1
+    const masterGain = context.createGain()
+    masterGain.gain.value = 1
+
+    source.connect(rawAnalyser)
+    source.connect(rawGain)
+    rawGain.connect(masterGain)
     source.connect(highPass)
     highPass.connect(denoiser)
     denoiser.connect(compressor)
     compressor.connect(makeup)
     makeup.connect(limiter)
-    limiter.connect(destination)
+    limiter.connect(processedAnalyser)
+    limiter.connect(procGain)
+    procGain.connect(masterGain)
+    masterGain.connect(destination)
 
     const processed = destination.stream.getAudioTracks()[0]
     if (!processed) throw new Error('The audio pipeline produced no track')
     const ctx = context
-    return {
+    const rawBuffer = new Float32Array(rawAnalyser.fftSize)
+    const processedBuffer = new Float32Array(processedAnalyser.fftSize)
+    let bypassed = false
+    let processedActive = true
+    const startedAt = Date.now()
+    const readLevels = (): MicrophoneLevels => {
+      rawAnalyser.getFloatTimeDomainData(rawBuffer)
+      processedAnalyser.getFloatTimeDomainData(processedBuffer)
+      return { raw: peak(rawBuffer), processed: peak(processedBuffer) }
+    }
+    const applyRouting = (): void => {
+      const useProcessed = processedActive && !bypassed
+      procGain.gain.value = useProcessed ? 1 : 0
+      rawGain.gain.value = useProcessed ? 0 : 1
+    }
+    let peakRaw = 0
+    let peakProcessed = 0
+    // Highest processed level ever seen. The failsafe only fires when the chain never produced sound,
+    // so a denoiser that legitimately silences background noise is not bypassed.
+    let maxProcessed = 0
+    const chain: MicrophoneChain = {
       track: processed,
       denoised: true,
+      deviceLabel,
+      contextState: ctx.state,
+      isBypassed: () => bypassed,
+      setProcessedActive: (active) => {
+        processedActive = active
+        applyRouting()
+      },
+      setMuted: (muted) => {
+        masterGain.gain.value = muted ? 0 : 1
+      },
+      getLevels: () => {
+        const levels = readLevels()
+        peakRaw = Math.max(peakRaw * 0.9, levels.raw)
+        peakProcessed = Math.max(peakProcessed * 0.9, levels.processed)
+        maxProcessed = Math.max(maxProcessed, levels.processed)
+        chain.contextState = ctx.state
+        if (
+          !bypassed &&
+          processedActive &&
+          shouldBypassProcessed(peakRaw, maxProcessed, Date.now() - startedAt)
+        ) {
+          bypassed = true
+          applyRouting()
+          chain.onBypass?.()
+        }
+        return { raw: peakRaw, processed: peakProcessed }
+      },
       dispose: () => {
         stopStream(destination.stream)
         stopStream(stream)
         void ctx.close().catch(() => undefined)
       }
     }
+    return chain
   } catch (error) {
     console.error('AI noise removal unavailable, using the basic microphone stream', error)
     void context?.close().catch(() => undefined)

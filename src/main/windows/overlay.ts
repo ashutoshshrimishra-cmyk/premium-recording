@@ -13,6 +13,7 @@ import { is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import type { OverlayCommand, OverlayHistoryState } from '../../shared/ipc-schemas'
 import { screenshotFileName } from '../screenshotName'
+import { log } from '../logger'
 
 const TOOLBAR_MAX_WIDTH = 960
 const TOOLBAR_HEIGHT = 132
@@ -137,7 +138,10 @@ export async function openAnnotationOverlay(
 
   const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === displayId)
   if (!display) {
-    console.error('The selected screen could not be mapped to an annotation display')
+    log(
+      'error',
+      `The selected screen could not be mapped to an annotation display (id '${displayId}')`
+    )
     return { toolbar: false }
   }
 
@@ -149,7 +153,7 @@ export async function openAnnotationOverlay(
   try {
     await openCanvasWindow(display)
   } catch (error) {
-    console.error('Could not open the annotation canvas', error)
+    log('error', 'Could not open the annotation canvas', error)
     if (isAlive(canvasWindow)) canvasWindow.destroy()
     canvasWindow = undefined
   }
@@ -157,7 +161,7 @@ export async function openAnnotationOverlay(
   try {
     await openToolbarWindow(display)
   } catch (error) {
-    console.error('Could not open the annotation toolbar', error)
+    log('error', 'Could not open the annotation toolbar', error)
     if (isAlive(toolbarWindow)) toolbarWindow.destroy()
     toolbarWindow = undefined
   }

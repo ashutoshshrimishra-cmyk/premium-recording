@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { Circle, Pause, Play, Square } from 'lucide-react'
 import { useRecorderStore } from './store'
 import { ScreenRecorder } from '../recorder/recorder'
+import { formatDiagnostics, type RecordingDiagnostics } from '../recorder/diagnostics'
 
 type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -24,6 +25,21 @@ export const StartButton = memo(function StartButton() {
   const [realFps, setRealFps] = useState(0)
   const [mimeType, setMimeType] = useState('')
   const [message, setMessage] = useState('')
+  const [warnings, setWarnings] = useState<string[]>([])
+  const [diagnostics, setDiagnostics] = useState<RecordingDiagnostics | undefined>(undefined)
+  const [logPath, setLogPath] = useState('')
+
+  useEffect(() => {
+    void window.api
+      .diagnosticsGetInfo()
+      .then((info) => {
+        setLogPath(info.logPath)
+        void window.api.diagnosticsLog(
+          `Renderer ready: v${__APP_VERSION__} (${__BUILD_COMMIT__}) built ${__BUILD_TIME__} | ${info.platform} ${info.osRelease}`
+        )
+      })
+      .catch(() => undefined)
+  }, [])
 
   useEffect(
     () => () => {
@@ -54,6 +70,8 @@ export const StartButton = memo(function StartButton() {
     if (startingRef.current) return
     startingRef.current = true
     setMessage('')
+    setWarnings([])
+    setDiagnostics(undefined)
     setElapsed(0)
     setRealFps(0)
     setMimeType('')
@@ -68,7 +86,9 @@ export const StartButton = memo(function StartButton() {
     const recorder = new ScreenRecorder({
       onStatus: updateStatus,
       onError: setMessage,
-      onWarning: setMessage,
+      onWarning: (warning) =>
+        setWarnings((current) => (current.includes(warning) ? current : [...current, warning])),
+      onDiagnostics: setDiagnostics,
       onMimeType: setMimeType,
       onRealFps: setRealFps,
       onFile: (filePath) => setMessage(`Saved: ${filePath}`),
@@ -108,6 +128,9 @@ export const StartButton = memo(function StartButton() {
   const resume = (): void => recorderRef.current?.resume()
   const enabled = captureMode === 'screen' && sourceId.startsWith('screen:') && saveDir.length > 0
   const isActive = status !== 'idle'
+  const micLevel = diagnostics
+    ? Math.min(1, Math.max(diagnostics.audio.rawLevel, diagnostics.audio.processedLevel) * 2)
+    : 0
   const timer = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
 
   return (
@@ -136,6 +159,52 @@ export const StartButton = memo(function StartButton() {
             Use the annotation toolbar at the top of the screen (it is not recorded). Mouse mode
             lets you use the desktop · Ctrl/Cmd+Shift+A toggles it · Ctrl/Cmd+Shift+S stops
           </div>
+        </div>
+      )}
+      {isActive && diagnostics?.audio.requested && (
+        <div className="mb-2" aria-label="Microphone level">
+          <div className="h-1.5 overflow-hidden rounded bg-[var(--border)]">
+            <div
+              className="h-full bg-[var(--accent)]"
+              style={{ width: `${Math.round(micLevel * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <ul
+          role="alert"
+          className="mb-2 list-disc rounded-lg border border-red-500/60 py-2 pr-3 pl-7 text-xs text-red-400"
+        >
+          {warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
+      {diagnostics && (
+        <div className="mb-2 rounded-lg border border-[var(--border)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--muted)]">
+          {formatDiagnostics(diagnostics).map((line) => (
+            <div
+              key={line}
+              className={line.includes('file has audio: NO') ? 'text-red-400' : undefined}
+            >
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      {logPath && (
+        <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-[var(--muted)]">
+          <span className="truncate" title={logPath}>
+            Log: {logPath}
+          </span>
+          <button
+            type="button"
+            onClick={() => void window.api.diagnosticsShowLog()}
+            className="shrink-0 rounded border border-[var(--border)] px-2 py-1"
+          >
+            Open log folder
+          </button>
         </div>
       )}
       {message && (
