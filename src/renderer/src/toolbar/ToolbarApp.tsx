@@ -8,9 +8,15 @@ import {
   Flashlight,
   GripVertical,
   Heart,
+  Mic,
+  MicOff,
   MousePointer2,
   MoveDiagonal,
   MoveUpRight,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
+  PanelTop,
   Pencil,
   Redo2,
   RectangleHorizontal,
@@ -27,11 +33,14 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import type {
+  MicCommand,
+  MicState,
   OverlayCommand,
   OverlayHistoryState,
   OverlayShape,
   OverlayStamp,
-  OverlayTool
+  OverlayTool,
+  PanelDock
 } from '../../../shared/ipc-schemas'
 import {
   COLORS,
@@ -44,7 +53,7 @@ import {
   WIDTHS
 } from '../overlay/options'
 
-type Panel = 'tool' | 'format'
+type Panel = 'tool' | 'format' | 'mic'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
 
 const TOOLS: ReadonlyArray<{ tool: OverlayTool; label: string; Icon: LucideIcon }> = [
@@ -75,6 +84,21 @@ const STAMPS: ReadonlyArray<{ stamp: OverlayStamp; label: string; Icon: LucideIc
   { stamp: 'question', label: 'Question', Icon: CircleQuestionMark },
   { stamp: 'arrow', label: 'Arrow', Icon: ArrowRight }
 ]
+
+const DOCKS: ReadonlyArray<{ dock: PanelDock; label: string; Icon: LucideIcon }> = [
+  { dock: 'left', label: 'Dock left', Icon: PanelLeft },
+  { dock: 'right', label: 'Dock right', Icon: PanelRight },
+  { dock: 'top', label: 'Dock top', Icon: PanelTop },
+  { dock: 'bottom', label: 'Dock bottom', Icon: PanelBottom }
+]
+
+const INITIAL_MIC: MicState = {
+  muted: false,
+  level: 0,
+  denoised: false,
+  bypassed: false,
+  available: false
+}
 
 function ToolButton(props: {
   label: string
@@ -139,6 +163,16 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
   const [stopping, setStopping] = useState(false)
   const [message, setMessage] = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const [dock, setDock] = useState<PanelDock>('right')
+  const [expanded, setExpanded] = useState(false)
+  const [mic, setMic] = useState<MicState>(INITIAL_MIC)
+  const vertical = dock === 'left' || dock === 'right'
+
+  const sendMic = useCallback((command: MicCommand): void => {
+    window.api.panelSendMicCommand(command).catch((error: unknown) => {
+      setMessage(error instanceof Error ? error.message : 'The microphone command failed')
+    })
+  }, [])
 
   const send = useCallback((command: OverlayCommand): void => {
     window.api.overlaySendCommand(command).catch((error: unknown) => {
@@ -149,6 +183,14 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
 
   useEffect(() => {
     const offHistory = window.api.onOverlayHistoryChanged(setHistory)
+    const offMicState = window.api.onPanelMicState(setMic)
+    window.api
+      .panelGetLayout()
+      .then((layout) => {
+        setDock(layout.dock)
+        setExpanded(layout.expanded)
+      })
+      .catch(() => undefined)
     // Ctrl/Cmd+Shift+A or Escape on the canvas can switch modes without the toolbar.
     const offMode = window.api.onOverlayInteractiveChanged((interactive) => {
       if (!interactive) {
@@ -159,6 +201,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     })
     return () => {
       offHistory()
+      offMicState()
       offMode()
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
@@ -170,6 +213,18 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     setTool(next)
     if (next !== 'mouse') lastDrawingTool.current = next
     send({ type: 'tool', tool: next })
+  }
+
+  const changeDock = (next: PanelDock): void => {
+    window.api
+      .panelSetLayout({ dock: next })
+      .then((layout) => {
+        setDock(layout.dock)
+        setExpanded(layout.expanded)
+      })
+      .catch((error: unknown) => {
+        setMessage(error instanceof Error ? error.message : 'The panel could not be moved')
+      })
   }
 
   const chooseShape = (next: OverlayShape): void => {
@@ -302,6 +357,63 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     </>
   )
 
+  const micOptions = (
+    <div className="tb-mic" role="group" aria-label="Microphone">
+      <button
+        type="button"
+        className="tb-chip"
+        aria-pressed={mic.muted}
+        title={mic.muted ? 'Unmute the microphone' : 'Mute the microphone'}
+        onClick={() => sendMic({ type: 'mute', muted: !mic.muted })}
+      >
+        {mic.muted ? <MicOff size={15} /> : <Mic size={15} />}
+        <span>{mic.muted ? 'Muted' : 'Mute'}</span>
+      </button>
+      <div
+        className="tb-meter"
+        role="meter"
+        aria-label="Microphone level"
+        aria-valuemin={0}
+        aria-valuemax={1}
+        aria-valuenow={mic.level}
+      >
+        <div className="tb-meter__fill" style={{ width: `${Math.round(mic.level * 100)}%` }} />
+      </div>
+      <button
+        type="button"
+        className="tb-chip"
+        role="switch"
+        aria-checked={mic.denoised}
+        aria-pressed={mic.denoised}
+        disabled={!mic.available || mic.bypassed}
+        title={
+          !mic.available
+            ? 'AI noise removal is not available for this recording'
+            : mic.bypassed
+              ? 'AI noise removal was bypassed because it produced no sound'
+              : 'Switch AI noise removal on or off'
+        }
+        onClick={() => sendMic({ type: 'denoise', active: !mic.denoised })}
+      >
+        <span>AI noise removal {mic.denoised ? 'on' : 'off'}</span>
+      </button>
+    </div>
+  )
+
+  const needsOptions =
+    message !== '' ||
+    panel === 'format' ||
+    panel === 'mic' ||
+    (panel === 'tool' && (tool === 'draw' || tool === 'stamp'))
+
+  useEffect(() => {
+    if (!vertical || needsOptions === expanded) return
+    window.api
+      .panelSetLayout({ expanded: needsOptions })
+      .then((layout) => setExpanded(layout.expanded))
+      .catch(() => undefined)
+  }, [vertical, needsOptions, expanded])
+
   let options: ReactNode
   if (message) {
     options = (
@@ -311,6 +423,8 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     )
   } else if (panel === 'format') {
     options = formatOptions
+  } else if (panel === 'mic') {
+    options = micOptions
   } else if (tool === 'draw') {
     options = (
       <div className="tb-group" role="group" aria-label="Drawing shape">
@@ -352,71 +466,151 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     options = <p className="tb-hint">{hints[tool]}</p>
   }
 
+  const toolButtons = (
+    <>
+      {TOOLS.map(({ tool: item, label, Icon }) => (
+        <ToolButton
+          key={item}
+          label={label}
+          icon={<Icon size={vertical ? 20 : 22} />}
+          pressed={tool === item && panel === 'tool'}
+          onClick={() => chooseTool(item)}
+        />
+      ))}
+      <ToolButton
+        label="Format"
+        title="Color, stroke width and text size"
+        icon={<span className="tb-format-swatch" style={{ backgroundColor: color }} />}
+        pressed={panel === 'format'}
+        onClick={() => setPanel((current) => (current === 'format' ? 'tool' : 'format'))}
+      />
+      <ToolButton
+        label={mic.muted ? 'Muted' : 'Mic'}
+        title="Microphone: mute, level and AI noise removal"
+        icon={
+          <span className="tb-mic-icon">
+            {mic.muted ? <MicOff size={vertical ? 20 : 22} /> : <Mic size={vertical ? 20 : 22} />}
+            <span
+              className="tb-mic-icon__level"
+              style={{ width: `${Math.round(mic.level * 100)}%` }}
+            />
+          </span>
+        }
+        pressed={panel === 'mic'}
+        onClick={() => setPanel((current) => (current === 'mic' ? 'tool' : 'mic'))}
+      />
+      <span className="tb-divider" aria-hidden="true" />
+      <ToolButton
+        label="Undo"
+        title="Undo (Ctrl+Z)"
+        icon={<Undo2 size={vertical ? 20 : 22} />}
+        disabled={!history.canUndo}
+        onClick={() => send({ type: 'undo' })}
+      />
+      <ToolButton
+        label="Redo"
+        title="Redo (Ctrl+Shift+Z)"
+        icon={<Redo2 size={vertical ? 20 : 22} />}
+        disabled={!history.canRedo}
+        onClick={() => send({ type: 'redo' })}
+      />
+      <ToolButton
+        label="Clear"
+        title="Clear all annotations (can be undone)"
+        icon={<Trash2 size={vertical ? 20 : 22} />}
+        disabled={!history.hasAnnotations}
+        onClick={() => send({ type: 'clear' })}
+      />
+      <ToolButton
+        label={saveLabel}
+        title="Save a screenshot of the screen with your annotations"
+        icon={
+          saveState === 'saved' ? (
+            <Check size={vertical ? 20 : 22} />
+          ) : (
+            <Save size={vertical ? 20 : 22} />
+          )
+        }
+        disabled={saveState === 'saving'}
+        pressed={saveState === 'saved'}
+        onClick={saveScreenshot}
+      />
+    </>
+  )
+
+  const closeButton = (
+    <button
+      type="button"
+      className="tb-close"
+      aria-label="Stop recording and close annotation tools"
+      title="Stop recording"
+      disabled={stopping}
+      onClick={requestStop}
+    >
+      <X size={20} strokeWidth={3} />
+    </button>
+  )
+
+  const dockButtons = (
+    <div className="tb-docks" role="group" aria-label="Panel position">
+      {DOCKS.map(({ dock: item, label, Icon }) => (
+        <button
+          key={item}
+          type="button"
+          className="tb-dock"
+          aria-pressed={dock === item}
+          aria-label={label}
+          title={label}
+          onClick={() => changeDock(item)}
+        >
+          <Icon size={14} />
+        </button>
+      ))}
+    </div>
+  )
+
+  if (vertical) {
+    return (
+      <div className="tb-root tb-root--vertical">
+        <div className="tb-col" role="toolbar" aria-label="Annotation tools">
+          <div className="tb-drag tb-drag--bar" title="Drag to move the panel" aria-hidden="true">
+            <GripVertical size={16} style={{ transform: 'rotate(90deg)' }} />
+          </div>
+          {dockButtons}
+          <div className="tb-col__tools">{toolButtons}</div>
+          {closeButton}
+        </div>
+        {expanded && (
+          <div className="tb-side">
+            <div className="tb-options tb-options--side">{options}</div>
+            <button
+              type="button"
+              className="tb-stop"
+              title="Stop recording (Ctrl+Shift+S)"
+              disabled={stopping}
+              onClick={requestStop}
+            >
+              <Square size={14} fill="currentColor" aria-hidden="true" />
+              {stopping ? 'Stopping…' : 'Stop recording'}
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="tb-root">
       <div className="tb-row tb-row--main" role="toolbar" aria-label="Annotation tools">
-        <div className="tb-drag" title="Drag to move the toolbar" aria-hidden="true">
+        <div className="tb-drag" title="Drag to move the panel" aria-hidden="true">
           <GripVertical size={18} />
         </div>
-        {TOOLS.map(({ tool: item, label, Icon }) => (
-          <ToolButton
-            key={item}
-            label={label}
-            icon={<Icon size={22} />}
-            pressed={tool === item && panel === 'tool'}
-            onClick={() => chooseTool(item)}
-          />
-        ))}
-        <ToolButton
-          label="Format"
-          title="Color, stroke width and text size"
-          icon={<span className="tb-format-swatch" style={{ backgroundColor: color }} />}
-          pressed={panel === 'format'}
-          onClick={() => setPanel((current) => (current === 'format' ? 'tool' : 'format'))}
-        />
-        <span className="tb-divider" aria-hidden="true" />
-        <ToolButton
-          label="Undo"
-          title="Undo (Ctrl+Z)"
-          icon={<Undo2 size={22} />}
-          disabled={!history.canUndo}
-          onClick={() => send({ type: 'undo' })}
-        />
-        <ToolButton
-          label="Redo"
-          title="Redo (Ctrl+Shift+Z)"
-          icon={<Redo2 size={22} />}
-          disabled={!history.canRedo}
-          onClick={() => send({ type: 'redo' })}
-        />
-        <ToolButton
-          label="Clear"
-          title="Clear all annotations (can be undone)"
-          icon={<Trash2 size={22} />}
-          disabled={!history.hasAnnotations}
-          onClick={() => send({ type: 'clear' })}
-        />
-        <ToolButton
-          label={saveLabel}
-          title="Save a screenshot of the screen with your annotations"
-          icon={saveState === 'saved' ? <Check size={22} /> : <Save size={22} />}
-          disabled={saveState === 'saving'}
-          pressed={saveState === 'saved'}
-          onClick={saveScreenshot}
-        />
-        <button
-          type="button"
-          className="tb-close"
-          aria-label="Stop recording and close annotation tools"
-          title="Stop recording"
-          disabled={stopping}
-          onClick={requestStop}
-        >
-          <X size={20} strokeWidth={3} />
-        </button>
+        {toolButtons}
+        {closeButton}
       </div>
 
       <div className="tb-row tb-row--options">
+        {dockButtons}
         <div className="tb-options">{options}</div>
         <button
           type="button"

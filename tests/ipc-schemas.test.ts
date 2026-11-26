@@ -9,7 +9,12 @@ import {
   getSettingsInputSchema,
   getSettingsOutputSchema,
   setSettingsInputSchema,
-  setSettingsOutputSchema
+  setSettingsOutputSchema,
+  recordingStartOutputSchema,
+  micCommandSchema,
+  micStateSchema,
+  panelSetLayoutInputSchema,
+  panelLayoutSchema
 } from '../src/shared/ipc-schemas'
 
 describe('IPC schemas', () => {
@@ -120,5 +125,37 @@ describe('IPC schemas', () => {
       true
     )
     expect(setSettingsInputSchema.safeParse({ ...base, audioDeviceId: '' }).success).toBe(false)
+  })
+
+  it('requires overlay status in the recording start result', () => {
+    const base = { filePath: 'C:\\v\\a.mp4', sessionId: '0123456789abcdef0123' }
+    expect(
+      recordingStartOutputSchema.safeParse({
+        ...base,
+        overlay: { canvas: true, toolbar: false, error: 'No display' }
+      }).success
+    ).toBe(true)
+    expect(recordingStartOutputSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('validates microphone commands from the panel', () => {
+    expect(micCommandSchema.safeParse({ type: 'mute', muted: true }).success).toBe(true)
+    expect(micCommandSchema.safeParse({ type: 'denoise', active: false }).success).toBe(true)
+    expect(micCommandSchema.safeParse({ type: 'mute' }).success).toBe(false)
+    expect(micCommandSchema.safeParse({ type: 'volume', value: 3 }).success).toBe(false)
+  })
+
+  it('validates microphone state with a bounded level', () => {
+    const state = { muted: false, level: 0.4, denoised: true, bypassed: false, available: true }
+    expect(micStateSchema.safeParse(state).success).toBe(true)
+    expect(micStateSchema.safeParse({ ...state, level: 1.5 }).success).toBe(false)
+    expect(micStateSchema.safeParse({ ...state, muted: 'no' }).success).toBe(false)
+  })
+
+  it('validates panel layout requests', () => {
+    expect(panelSetLayoutInputSchema.safeParse({ dock: 'left' }).success).toBe(true)
+    expect(panelSetLayoutInputSchema.safeParse({ expanded: true }).success).toBe(true)
+    expect(panelSetLayoutInputSchema.safeParse({ dock: 'center' }).success).toBe(false)
+    expect(panelLayoutSchema.safeParse({ dock: 'right', expanded: false }).success).toBe(true)
   })
 })

@@ -16,6 +16,10 @@ import type {
   OverlayCommand,
   OverlayHistoryState,
   OverlaySaveScreenshotOutput,
+  MicCommand,
+  MicState,
+  PanelLayout,
+  PanelSetLayoutInput,
   DiagnosticsInfo,
   DiagnosticsProbeFileOutput
 } from '../shared/ipc-schemas'
@@ -38,6 +42,12 @@ interface RecorderApi {
   overlayReportHistory(state: OverlayHistoryState): Promise<boolean>
   onOverlayHistoryChanged(callback: (state: OverlayHistoryState) => void): () => void
   overlaySaveScreenshot(): Promise<OverlaySaveScreenshotOutput>
+  panelSendMicCommand(command: MicCommand): Promise<boolean>
+  onRecordingMicCommand(callback: (command: MicCommand) => void): () => void
+  recordingPublishMicState(state: MicState): Promise<boolean>
+  onPanelMicState(callback: (state: MicState) => void): () => void
+  panelGetLayout(): Promise<PanelLayout>
+  panelSetLayout(input: PanelSetLayoutInput): Promise<PanelLayout>
   diagnosticsLog(line: string): Promise<boolean>
   diagnosticsGetInfo(): Promise<DiagnosticsInfo>
   diagnosticsShowLog(): Promise<boolean>

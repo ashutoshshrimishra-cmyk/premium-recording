@@ -56,7 +56,12 @@ export const recordingStartInputSchema = z.object({
 })
 export const recordingStartOutputSchema = z.object({
   filePath: z.string().min(1),
-  sessionId: z.string().min(16)
+  sessionId: z.string().min(16),
+  overlay: z.object({
+    canvas: z.boolean(),
+    toolbar: z.boolean(),
+    error: z.string().max(500).optional()
+  })
 })
 
 const binaryChunkSchema = z.custom<ArrayBuffer | ArrayBufferView>(
@@ -131,6 +136,32 @@ export const overlayReportHistoryOutputSchema = z.boolean()
 export const overlaySaveScreenshotInputSchema = z.void()
 export const overlaySaveScreenshotOutputSchema = z.object({ filePath: z.string().min(1) })
 
+/** Microphone commands sent from the annotation panel to the recording window (through the main process). */
+export const micCommandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('mute'), muted: z.boolean() }),
+  z.object({ type: z.literal('denoise'), active: z.boolean() })
+])
+export const micCommandOutputSchema = z.boolean()
+
+/** Microphone state sent from the recording window to the panel (about 10 times per second). */
+export const micStateSchema = z.object({
+  muted: z.boolean(),
+  level: z.number().min(0).max(1),
+  denoised: z.boolean(),
+  bypassed: z.boolean(),
+  /** True when AI noise removal could be started for this recording. */
+  available: z.boolean()
+})
+export const micStateOutputSchema = z.boolean()
+
+export const panelDockSchema = z.enum(['right', 'left', 'top', 'bottom'])
+export const panelLayoutSchema = z.object({ dock: panelDockSchema, expanded: z.boolean() })
+export const panelGetLayoutInputSchema = z.void()
+export const panelSetLayoutInputSchema = z.object({
+  dock: panelDockSchema.optional(),
+  expanded: z.boolean().optional()
+})
+
 export const diagnosticsLogInputSchema = z.object({ line: z.string().max(2000) })
 export const diagnosticsLogOutputSchema = z.boolean()
 export const diagnosticsGetInfoInputSchema = z.void()
@@ -173,6 +204,11 @@ export type OverlayShape = z.infer<typeof overlayShapeSchema>
 export type OverlayStamp = z.infer<typeof overlayStampSchema>
 export type OverlayCommand = z.infer<typeof overlayCommandSchema>
 export type OverlayHistoryState = z.infer<typeof overlayHistoryStateSchema>
+export type MicCommand = z.infer<typeof micCommandSchema>
+export type MicState = z.infer<typeof micStateSchema>
+export type PanelDock = z.infer<typeof panelDockSchema>
+export type PanelLayout = z.infer<typeof panelLayoutSchema>
+export type PanelSetLayoutInput = z.infer<typeof panelSetLayoutInputSchema>
 export type DiagnosticsInfo = z.infer<typeof diagnosticsGetInfoOutputSchema>
 export type DiagnosticsProbeFileOutput = z.infer<typeof diagnosticsProbeFileOutputSchema>
 export type OverlaySaveScreenshotOutput = z.infer<typeof overlaySaveScreenshotOutputSchema>

@@ -24,6 +24,7 @@ interface VideoFrameCallbackVideo extends HTMLVideoElement {
 
 const PROBE_DURATION_MS = 800
 const DIAGNOSTICS_INTERVAL_MS = 500
+const MIC_STATE_INTERVAL_MS = 100
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -49,6 +50,10 @@ export class ScreenRecorder {
   })
   private diagnosticsTimer?: ReturnType<typeof setInterval>
   private lastRealFps = 0
+  private micMuted = false
+  private denoiseActive = true
+  private removeMicListener?: () => void
+  private micStateTimer?: ReturnType<typeof setInterval>
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -214,6 +219,7 @@ export class ScreenRecorder {
       })
       this.fileStarted = true
       this.sessionId = started.sessionId
+      this.applyOverlayStatus(started.overlay)
       if (this.stopped) throw new Error('Recording was cancelled')
 
       this.chunkWriter = new RecordingChunkWriter(
@@ -258,6 +264,7 @@ export class ScreenRecorder {
         // Some capture sources reject frame rate changes after start.
       }
       this.startDiagnostics()
+      this.startMicBridge()
       this.callbacks.onStatus('recording')
     } catch (error) {
       this.stopTracks()
@@ -320,10 +327,59 @@ export class ScreenRecorder {
       d.audio.bypassed = mic.isBypassed()
       d.audio.deviceLabel = mic.deviceLabel
       d.audio.trackState = mic.track.readyState
-      d.audio.muted = !mic.track.enabled || mic.track.muted
+      d.audio.muted = this.micMuted || !mic.track.enabled || mic.track.muted
     }
     d.video.actualFps = this.lastRealFps || d.video.actualFps
     this.callbacks.onDiagnostics?.({ ...d, video: { ...d.video }, audio: { ...d.audio } })
+  }
+
+  private applyOverlayStatus(overlay: { canvas: boolean; toolbar: boolean; error?: string }): void {
+    this.diagnostics.overlay = {
+      canvas: overlay.canvas ? 'ok' : 'failed',
+      panel: overlay.toolbar ? 'ok' : 'failed',
+      error: overlay.error ?? ''
+    }
+    this.log(`Overlay: canvas ${overlay.canvas}, panel ${overlay.toolbar} ${overlay.error ?? ''}`)
+    if (!overlay.toolbar) {
+      this.warn(
+        `The annotation panel could not be shown (${overlay.error || 'unknown reason'}). Use Stop in this window to finish the recording.`
+      )
+    }
+  }
+
+  /** Lets the annotation panel mute the microphone and toggle AI noise removal, and feeds it the level. */
+  private startMicBridge(): void {
+    const mic = this.microphone
+    if (!mic) return
+    this.removeMicListener = window.api.onRecordingMicCommand((command) => {
+      if (command.type === 'mute') {
+        this.micMuted = command.muted
+        mic.setMuted(command.muted)
+      } else {
+        this.denoiseActive = command.active
+        mic.setProcessedActive(command.active)
+      }
+      this.log(`Mic command: ${JSON.stringify(command)}`)
+      this.publishMicState()
+    })
+    this.publishMicState()
+    this.micStateTimer = setInterval(() => this.publishMicState(), MIC_STATE_INTERVAL_MS)
+  }
+
+  private publishMicState(): void {
+    const mic = this.microphone
+    if (!mic) return
+    const levels = mic.getLevels()
+    const level = this.micMuted ? 0 : Math.min(1, Math.max(levels.raw, levels.processed) * 2)
+    void window.api
+      .recordingPublishMicState({
+        muted: this.micMuted,
+        level,
+        denoised: mic.denoised && this.denoiseActive && !mic.isBypassed(),
+        bypassed: mic.isBypassed(),
+        available: mic.denoised
+      })
+      .catch(() => undefined)
   }
 
   private startDiagnostics(): void {
@@ -453,6 +509,12 @@ export class ScreenRecorder {
   private cleanup(): void {
     if (this.diagnosticsTimer) clearInterval(this.diagnosticsTimer)
     this.diagnosticsTimer = undefined
+    if (this.micStateTimer) clearInterval(this.micStateTimer)
+    this.micStateTimer = undefined
+    this.removeMicListener?.()
+    this.removeMicListener = undefined
+    this.micMuted = false
+    this.denoiseActive = true
     this.removeStopListener?.()
     this.removeStopListener = undefined
     if (this.finishFallback) clearTimeout(this.finishFallback)

@@ -156,8 +156,9 @@ export const StartButton = memo(function StartButton() {
             </div>
           )}
           <div className="mt-1 text-[var(--muted)]">
-            Use the annotation toolbar at the top of the screen (it is not recorded). Mouse mode
-            lets you use the desktop · Ctrl/Cmd+Shift+A toggles it · Ctrl/Cmd+Shift+S stops
+            The annotation panel is on the right side of the screen. Drag it to move it or use its
+            dock buttons. It is not recorded. Mouse mode lets you use the desktop · Ctrl/Cmd+Shift+A
+            toggles it · Ctrl/Cmd+Shift+S stops
           </div>
         </div>
       )}

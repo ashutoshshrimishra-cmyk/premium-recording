@@ -42,6 +42,13 @@ import {
   overlayReportHistoryOutputSchema,
   overlaySaveScreenshotInputSchema,
   overlaySaveScreenshotOutputSchema,
+  micCommandSchema,
+  micCommandOutputSchema,
+  micStateSchema,
+  micStateOutputSchema,
+  panelGetLayoutInputSchema,
+  panelLayoutSchema,
+  panelSetLayoutInputSchema,
   diagnosticsLogInputSchema,
   diagnosticsLogOutputSchema,
   diagnosticsGetInfoInputSchema,
@@ -66,7 +73,13 @@ import {
 import {
   closeAnnotationOverlay,
   forwardOverlayCommand,
+  forwardMicCommand,
+  forwardMicState,
   forwardOverlayHistory,
+  getPanelLayout,
+  isRecordingOwnerSender,
+  raiseAnnotationPanel,
+  setPanelLayout,
   isAnnotationCanvasSender,
   isAnnotationOverlaySender,
   isAnnotationToolbarSender,
@@ -238,18 +251,31 @@ export function registerIpc(): void {
       fileStarted = true
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
 
-      if (win && !win.isDestroyed() && !win.isMinimized()) {
-        win.minimize()
-        await sleep(300)
-      }
+      // Open the annotation windows first so the main window only hides when the panel is usable.
+      const overlay = await openAnnotationOverlay(
+        source.display_id,
+        source.id,
+        owner,
+        recording.saveDir
+      )
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
-      const overlay = await openAnnotationOverlay(source.display_id, owner, recording.saveDir)
-      // Without a toolbar the user could not stop from the screen, so keep the app window visible.
-      if (!overlay.toolbar && win && !win.isDestroyed() && win.isMinimized()) win.restore()
+      if (overlay.toolbar) {
+        if (win && !win.isDestroyed() && !win.isMinimized()) {
+          win.minimize()
+          await sleep(300)
+        }
+        raiseAnnotationPanel()
+      } else {
+        log(
+          'error',
+          `Annotation panel unavailable, the main window stays visible: ${overlay.error}`
+        )
+        if (win && !win.isDestroyed() && win.isMinimized()) win.restore()
+      }
       await sleep(200)
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
 
-      return recordingStartOutputSchema.parse({ filePath, sessionId })
+      return recordingStartOutputSchema.parse({ filePath, sessionId, overlay })
     } catch (error) {
       if (activeSession?.id === sessionId) {
         closeAnnotationOverlay()
@@ -347,6 +373,42 @@ export function registerIpc(): void {
     }
     overlaySaveScreenshotInputSchema.parse(input)
     return overlaySaveScreenshotOutputSchema.parse({ filePath: await saveAnnotationScreenshot() })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.panelMicCommand, (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationToolbarSender(event.sender.id)) {
+      throw new Error('Only the annotation panel can send microphone commands')
+    }
+    const command = micCommandSchema.parse(input)
+    return micCommandOutputSchema.parse(forwardMicCommand(command))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recordingMicState, (event, input: unknown) => {
+    validateSender(event)
+    if (!isRecordingOwnerSender(event.sender.id)) {
+      throw new Error('Only the recording window can publish microphone state')
+    }
+    const state = micStateSchema.parse(input)
+    return micStateOutputSchema.parse(forwardMicState(state))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.panelGetLayout, (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationToolbarSender(event.sender.id)) {
+      throw new Error('Only the annotation panel can read the panel layout')
+    }
+    panelGetLayoutInputSchema.parse(input)
+    return panelLayoutSchema.parse(getPanelLayout())
+  })
+
+  ipcMain.handle(IPC_CHANNELS.panelSetLayout, (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationToolbarSender(event.sender.id)) {
+      throw new Error('Only the annotation panel can change the panel layout')
+    }
+    const request = panelSetLayoutInputSchema.parse(input)
+    return panelLayoutSchema.parse(setPanelLayout(request))
   })
 
   ipcMain.handle(IPC_CHANNELS.diagnosticsLog, (event, input: unknown) => {

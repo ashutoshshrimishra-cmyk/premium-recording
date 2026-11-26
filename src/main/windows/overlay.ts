@@ -10,14 +10,43 @@ import {
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
+import Store from 'electron-store'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import type { OverlayCommand, OverlayHistoryState } from '../../shared/ipc-schemas'
+import type {
+  MicCommand,
+  MicState,
+  OverlayCommand,
+  OverlayHistoryState,
+  PanelLayout
+} from '../../shared/ipc-schemas'
 import { screenshotFileName } from '../screenshotName'
 import { log } from '../logger'
+import {
+  clampToDisplays,
+  dockBounds,
+  panelSize,
+  resizeKeepingEdge,
+  resolveDisplay,
+  PANEL_EXPANDED_WIDTH,
+  PANEL_TOOLS_WIDTH,
+  type PanelDock,
+  type Rect
+} from './panelLayout'
 
-const TOOLBAR_MAX_WIDTH = 960
-const TOOLBAR_HEIGHT = 132
-const TOOLBAR_MARGIN = 12
+const LOAD_TIMEOUT_MS = 3000
+const DEFAULT_DOCK: PanelDock = 'right'
+
+interface PanelPrefs {
+  dock: PanelDock
+  x?: number
+  y?: number
+}
+
+export interface OverlayOpenResult {
+  canvas: boolean
+  toolbar: boolean
+  error?: string
+}
 
 let canvasWindow: BrowserWindow | undefined
 let toolbarWindow: BrowserWindow | undefined
@@ -25,6 +54,19 @@ let recordingOwner: WebContents | undefined
 let overlayDisplay: Display | undefined
 let screenshotDir: string | undefined
 let interactive = true
+let panelDock: PanelDock = DEFAULT_DOCK
+let panelExpanded = false
+let panelStore: Store<PanelPrefs> | undefined
+let panelSaveTimer: ReturnType<typeof setTimeout> | undefined
+
+function getPanelStore(): Store<PanelPrefs> {
+  panelStore ??= new Store<PanelPrefs>({ name: 'overlay-panel', defaults: { dock: DEFAULT_DOCK } })
+  return panelStore
+}
+
+function workAreas(): Rect[] {
+  return screen.getAllDisplays().map((display) => ({ ...display.workArea }))
+}
 
 function isAlive(win: BrowserWindow | undefined): win is BrowserWindow {
   return Boolean(win && !win.isDestroyed())
@@ -40,13 +82,48 @@ function keepToolbarOnTop(): void {
   if (isAlive(toolbarWindow)) toolbarWindow.moveTop()
 }
 
+/**
+ * Loads a renderer view. Rejects when the load fails, the renderer process dies or nothing
+ * finished within the timeout, and logs every failure.
+ */
 async function loadView(win: BrowserWindow, view: 'overlay' | 'toolbar'): Promise<void> {
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    const url = new URL(process.env.ELECTRON_RENDERER_URL)
-    url.searchParams.set('view', view)
-    await win.loadURL(url.toString())
-  } else {
-    await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const failure = new Promise<never>((_resolve, reject) => {
+    win.webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        if (!isMainFrame || errorCode === -3) return
+        const message = `The ${view} window failed to load (${errorCode} ${errorDescription}) ${validatedURL}`
+        log('error', message)
+        reject(new Error(message))
+      }
+    )
+    win.webContents.on('render-process-gone', (_event, details) => {
+      const message = `The ${view} renderer process ended (${details.reason})`
+      log('error', message)
+      reject(new Error(message))
+    })
+    timer = setTimeout(() => {
+      const message = `The ${view} window did not load within ${LOAD_TIMEOUT_MS} ms`
+      log('error', message)
+      reject(new Error(message))
+    }, LOAD_TIMEOUT_MS)
+  })
+  failure.catch(() => undefined)
+  const load = (async (): Promise<void> => {
+    if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+      const url = new URL(process.env.ELECTRON_RENDERER_URL)
+      url.searchParams.set('view', view)
+      await win.loadURL(url.toString())
+    } else {
+      await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } })
+    }
+  })()
+  load.catch(() => undefined)
+  try {
+    await Promise.race([load, failure])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -89,13 +166,37 @@ async function openCanvasWindow(display: Display): Promise<void> {
   win.show()
 }
 
+function restorePanelBounds(display: Display, dock: PanelDock): Rect {
+  const size = panelSize(dock, panelExpanded, display.workArea)
+  const docked = dockBounds(display.workArea, dock, size)
+  const saved = getPanelStore().store
+  if (saved.dock === dock && typeof saved.x === 'number' && typeof saved.y === 'number') {
+    return clampToDisplays({ ...docked, x: saved.x, y: saved.y }, workAreas())
+  }
+  return docked
+}
+
+function savePanelPrefsSoon(): void {
+  if (panelSaveTimer) clearTimeout(panelSaveTimer)
+  panelSaveTimer = setTimeout(() => {
+    panelSaveTimer = undefined
+    if (!isAlive(toolbarWindow)) return
+    try {
+      const { x, y } = toolbarWindow.getBounds()
+      getPanelStore().set({ dock: panelDock, x, y })
+    } catch (error) {
+      log('warn', 'Could not save the annotation panel position', error)
+    }
+  }, 400)
+}
+
 async function openToolbarWindow(display: Display): Promise<void> {
-  const width = Math.min(TOOLBAR_MAX_WIDTH, display.bounds.width - TOOLBAR_MARGIN * 2)
+  const stored = getPanelStore().get('dock')
+  panelDock = stored === 'left' || stored === 'top' || stored === 'bottom' ? stored : DEFAULT_DOCK
+  panelExpanded = false
+  const bounds = restorePanelBounds(display, panelDock)
   const win = new BrowserWindow({
-    x: display.bounds.x + Math.round((display.bounds.width - width) / 2),
-    y: display.bounds.y + TOOLBAR_MARGIN,
-    width,
-    height: TOOLBAR_HEIGHT,
+    ...bounds,
     useContentSize: true,
     show: false,
     frame: false,
@@ -108,52 +209,97 @@ async function openToolbarWindow(display: Display): Promise<void> {
     maximizable: false,
     fullscreenable: false,
     autoHideMenuBar: true,
-    title: 'Annotation toolbar',
+    title: 'Annotation panel',
     webPreferences: sharedWebPreferences
   })
   toolbarWindow = win
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  // Keeps the toolbar out of the recording and out of screenshots.
+  // Keeps the panel out of the recording and out of screenshots.
   win.setContentProtection(true)
   win.on('closed', () => {
     if (toolbarWindow === win) toolbarWindow = undefined
   })
+  win.on('moved', savePanelPrefsSoon)
   await loadView(win, 'toolbar')
-  if (win.isDestroyed()) throw new Error('Annotation toolbar closed before it was ready')
-  win.show()
+  if (win.isDestroyed()) throw new Error('Annotation panel closed before it was ready')
+  win.showInactive()
   win.moveTop()
 }
 
+/** Raises the panel above every other window, for example after the main window was minimized. */
+export function raiseAnnotationPanel(): void {
+  if (isAlive(toolbarWindow)) {
+    toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
+    toolbarWindow.moveTop()
+  }
+}
+
+export function getPanelLayout(): PanelLayout {
+  return { dock: panelDock, expanded: panelExpanded }
+}
+
+/** Docks the panel to another edge and/or widens it for the options sections. */
+export function setPanelLayout(request: { dock?: PanelDock; expanded?: boolean }): PanelLayout {
+  const win = toolbarWindow
+  if (!isAlive(win)) throw new Error('The annotation panel is not running')
+  const nextDock = request.dock ?? panelDock
+  const nextExpanded = request.expanded ?? panelExpanded
+  const current = win.getBounds()
+  const display = screen.getDisplayMatching(current)
+  let next: Rect
+  if (nextDock !== panelDock) {
+    const size = panelSize(nextDock, nextExpanded, display.workArea)
+    next = dockBounds(display.workArea, nextDock, size)
+  } else if (nextExpanded !== panelExpanded && (nextDock === 'left' || nextDock === 'right')) {
+    const width = nextExpanded ? PANEL_EXPANDED_WIDTH : PANEL_TOOLS_WIDTH
+    next = clampToDisplays(resizeKeepingEdge(current, width, nextDock), workAreas())
+  } else {
+    next = current
+  }
+  panelDock = nextDock
+  panelExpanded = nextExpanded
+  win.setBounds(next)
+  win.moveTop()
+  savePanelPrefsSoon()
+  return getPanelLayout()
+}
+
 /**
- * Opens the capture canvas and the toolbar. A failure of either window is logged and does not
- * stop the recording. Returns whether the toolbar is available.
+ * Opens the capture canvas and the annotation panel. A failure of either window is logged and does
+ * not stop the recording. Reports which windows are available and why one failed.
  */
 export async function openAnnotationOverlay(
-  displayId: string,
+  sourceDisplayId: string,
+  sourceId: string,
   owner: WebContents,
   saveDir: string
-): Promise<{ toolbar: boolean }> {
+): Promise<OverlayOpenResult> {
   closeAnnotationOverlay()
 
-  const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === displayId)
+  const displays = screen.getAllDisplays()
+  const display = resolveDisplay(sourceDisplayId, sourceId, displays, screen.getPrimaryDisplay())
   if (!display) {
-    log(
-      'error',
-      `The selected screen could not be mapped to an annotation display (id '${displayId}')`
-    )
-    return { toolbar: false }
+    const error = 'No display is available for the annotation tools'
+    log('error', `${error} (display_id '${sourceDisplayId}', source '${sourceId}')`)
+    return { canvas: false, toolbar: false, error }
   }
+  log(
+    'info',
+    `Annotation display ${display.id} chosen for display_id '${sourceDisplayId}', source '${sourceId}' (${displays.length} displays)`
+  )
 
   recordingOwner = owner
   overlayDisplay = display
   screenshotDir = saveDir
   interactive = true
+  const errors: string[] = []
 
   try {
     await openCanvasWindow(display)
   } catch (error) {
     log('error', 'Could not open the annotation canvas', error)
+    errors.push(`canvas: ${error instanceof Error ? error.message : String(error)}`)
     if (isAlive(canvasWindow)) canvasWindow.destroy()
     canvasWindow = undefined
   }
@@ -161,13 +307,23 @@ export async function openAnnotationOverlay(
   try {
     await openToolbarWindow(display)
   } catch (error) {
-    log('error', 'Could not open the annotation toolbar', error)
+    log('error', 'Could not open the annotation panel', error)
+    errors.push(`panel: ${error instanceof Error ? error.message : String(error)}`)
     if (isAlive(toolbarWindow)) toolbarWindow.destroy()
     toolbarWindow = undefined
   }
 
+  const toolbar = isAlive(toolbarWindow)
+  // Without the panel the canvas must not block the desktop.
+  if (!toolbar && isAlive(canvasWindow)) {
+    interactive = false
+    canvasWindow.setIgnoreMouseEvents(true, { forward: true })
+  }
   sendInteractiveState()
-  return { toolbar: isAlive(toolbarWindow) }
+  const result: OverlayOpenResult = { canvas: isAlive(canvasWindow), toolbar }
+  if (errors.length > 0) result.error = errors.join('; ').slice(0, 500)
+  log('info', `Annotation overlay result: ${JSON.stringify(result)}`)
+  return result
 }
 
 export function setAnnotationInteractive(nextInteractive: boolean): boolean {
@@ -193,6 +349,10 @@ export function isAnnotationToolbarSender(senderId: number): boolean {
   return isAlive(toolbarWindow) && toolbarWindow.webContents.id === senderId
 }
 
+export function isRecordingOwnerSender(senderId: number): boolean {
+  return Boolean(recordingOwner && !recordingOwner.isDestroyed() && recordingOwner.id === senderId)
+}
+
 export function isAnnotationOverlaySender(senderId: number): boolean {
   return isAnnotationCanvasSender(senderId) || isAnnotationToolbarSender(senderId)
 }
@@ -209,6 +369,20 @@ export function forwardOverlayCommand(command: OverlayCommand): boolean {
 export function forwardOverlayHistory(state: OverlayHistoryState): boolean {
   if (!isAlive(toolbarWindow)) return false
   toolbarWindow.webContents.send(IPC_CHANNELS.overlayHistoryChanged, state)
+  return true
+}
+
+/** Panel to recording window. */
+export function forwardMicCommand(command: MicCommand): boolean {
+  if (!recordingOwner || recordingOwner.isDestroyed()) return false
+  recordingOwner.send(IPC_CHANNELS.recordingMicCommand, command)
+  return true
+}
+
+/** Recording window to panel. */
+export function forwardMicState(state: MicState): boolean {
+  if (!isAlive(toolbarWindow)) return false
+  toolbarWindow.webContents.send(IPC_CHANNELS.panelMicState, state)
   return true
 }
 
@@ -254,6 +428,18 @@ export async function saveAnnotationScreenshot(): Promise<string> {
 
 export function closeAnnotationOverlay(): void {
   const windows = [canvasWindow, toolbarWindow]
+  if (panelSaveTimer && isAlive(toolbarWindow)) {
+    // Persist a pending position before the window goes away.
+    const { x, y } = toolbarWindow.getBounds()
+    try {
+      getPanelStore().set({ dock: panelDock, x, y })
+    } catch {
+      // Not critical.
+    }
+  }
+  if (panelSaveTimer) clearTimeout(panelSaveTimer)
+  panelSaveTimer = undefined
+  panelExpanded = false
   canvasWindow = undefined
   toolbarWindow = undefined
   interactive = true

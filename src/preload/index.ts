@@ -18,6 +18,10 @@ import type {
   OverlayCommand,
   OverlayHistoryState,
   OverlaySaveScreenshotOutput,
+  MicCommand,
+  MicState,
+  PanelLayout,
+  PanelSetLayoutInput,
   DiagnosticsInfo,
   DiagnosticsProbeFileOutput
 } from '../shared/ipc-schemas'
@@ -69,6 +73,25 @@ const api = {
   },
   overlaySaveScreenshot: (): Promise<OverlaySaveScreenshotOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.overlaySaveScreenshot, undefined),
+  panelSendMicCommand: (command: MicCommand): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.panelMicCommand, command),
+  onRecordingMicCommand: (callback: (command: MicCommand) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: MicCommand): void =>
+      callback(command)
+    ipcRenderer.on(IPC_CHANNELS.recordingMicCommand, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.recordingMicCommand, listener)
+  },
+  recordingPublishMicState: (state: MicState): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recordingMicState, state),
+  onPanelMicState: (callback: (state: MicState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: MicState): void => callback(state)
+    ipcRenderer.on(IPC_CHANNELS.panelMicState, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.panelMicState, listener)
+  },
+  panelGetLayout: (): Promise<PanelLayout> =>
+    ipcRenderer.invoke(IPC_CHANNELS.panelGetLayout, undefined),
+  panelSetLayout: (input: PanelSetLayoutInput): Promise<PanelLayout> =>
+    ipcRenderer.invoke(IPC_CHANNELS.panelSetLayout, input),
   diagnosticsLog: (line: string): Promise<boolean> =>
     ipcRenderer.invoke(IPC_CHANNELS.diagnosticsLog, { line }),
   diagnosticsGetInfo: (): Promise<DiagnosticsInfo> =>
