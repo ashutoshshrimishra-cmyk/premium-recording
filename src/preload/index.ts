@@ -14,7 +14,10 @@ import type {
   RecordingStopOutput,
   OverlaySetInteractiveInput,
   OverlaySetInteractiveOutput,
-  OverlayRequestStopOutput
+  OverlayRequestStopOutput,
+  OverlayCommand,
+  OverlayHistoryState,
+  OverlaySaveScreenshotOutput
 } from '../shared/ipc-schemas'
 
 const api = {
@@ -24,8 +27,7 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.getDisplays, undefined),
   pickFolder: (): Promise<PickFolderOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.pickFolder, undefined),
-  getSettings: (): Promise<Settings> =>
-    ipcRenderer.invoke(IPC_CHANNELS.getSettings, undefined),
+  getSettings: (): Promise<Settings> => ipcRenderer.invoke(IPC_CHANNELS.getSettings, undefined),
   setSettings: (settings: Settings): Promise<Settings> =>
     ipcRenderer.invoke(IPC_CHANNELS.setSettings, settings),
   recordingSelectSource: (input: RecordingSelectSourceInput): Promise<boolean> =>
@@ -47,6 +49,24 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.overlaySetInteractive, input),
   overlayRequestStop: (): Promise<OverlayRequestStopOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.overlayRequestStop, undefined),
+  overlaySendCommand: (command: OverlayCommand): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.overlayCommand, command),
+  onOverlayCommand: (callback: (command: OverlayCommand) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: OverlayCommand): void =>
+      callback(command)
+    ipcRenderer.on(IPC_CHANNELS.overlayCommandReceived, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.overlayCommandReceived, listener)
+  },
+  overlayReportHistory: (state: OverlayHistoryState): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.overlayReportHistory, state),
+  onOverlayHistoryChanged: (callback: (state: OverlayHistoryState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: OverlayHistoryState): void =>
+      callback(state)
+    ipcRenderer.on(IPC_CHANNELS.overlayHistoryChanged, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.overlayHistoryChanged, listener)
+  },
+  overlaySaveScreenshot: (): Promise<OverlaySaveScreenshotOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.overlaySaveScreenshot, undefined),
   onOverlayInteractiveChanged: (callback: (interactive: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, interactive: boolean): void =>
       callback(interactive)

@@ -1,14 +1,79 @@
-export interface Point { x: number; y: number }
+export interface Point {
+  x: number
+  y: number
+}
 
-export type Tool = 'pen' | 'line' | 'arrow' | 'doubleArrow' | 'rect' | 'roundRect' | 'ellipse'
+import type { OverlayShape, OverlayStamp } from '../../../shared/ipc-schemas'
+
+export type Tool = OverlayShape
+export type StampKind = OverlayStamp
+export type AnnotationKind = Tool | 'text' | 'stamp'
+
+/** Edge length of a stamp in pixels. */
+export const STAMP_SIZE = 56
+const TEXT_LINE_HEIGHT = 1.25
+const TEXT_CHAR_WIDTH = 0.58
+
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 export interface Annotation {
   id: string
-  tool: Tool
+  tool: AnnotationKind
   color: string
   width: number
-  /** pen: many points. Other tools: [start, end]. */
+  /**
+   * pen: many points. text: [top-left]. stamp: [center].
+   * Other tools: [start, end].
+   */
   points: Point[]
+  text?: string
+  fontSize?: number
+  stamp?: StampKind
+  /** Measured text width in pixels, when the renderer knows it. */
+  textWidth?: number
+}
+
+/** Bounding box of a text annotation. Uses the measured width when available. */
+export function textBounds(a: Annotation): Rect {
+  const fontSize = a.fontSize ?? 28
+  const origin = a.points[0] ?? { x: 0, y: 0 }
+  const width = a.textWidth ?? (a.text ?? '').length * fontSize * TEXT_CHAR_WIDTH
+  return { x: origin.x, y: origin.y, width, height: fontSize * TEXT_LINE_HEIGHT }
+}
+
+/** Bounding box of any annotation, used for the selection outline. */
+export function annotationBounds(a: Annotation): Rect {
+  if (a.tool === 'text') return textBounds(a)
+  if (a.tool === 'stamp') {
+    const c = a.points[0] ?? { x: 0, y: 0 }
+    return {
+      x: c.x - STAMP_SIZE / 2,
+      y: c.y - STAMP_SIZE / 2,
+      width: STAMP_SIZE,
+      height: STAMP_SIZE
+    }
+  }
+  const xs = a.points.map((p) => p.x)
+  const ys = a.points.map((p) => p.y)
+  const pad = a.width / 2
+  const minX = Math.min(...xs) - pad
+  const minY = Math.min(...ys) - pad
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(...xs) + pad - minX,
+    height: Math.max(...ys) + pad - minY
+  }
+}
+
+/** Returns a copy moved by (dx, dy). */
+export function translateAnnotation(a: Annotation, dx: number, dy: number): Annotation {
+  return { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
 }
 
 function distToSegment(p: Point, a: Point, b: Point): number {
@@ -23,6 +88,7 @@ function distToSegment(p: Point, a: Point, b: Point): number {
 
 function outlineSegments(a: Annotation): [Point, Point][] {
   const pts = a.points
+  if (a.tool === 'text' || a.tool === 'stamp') return []
   if (a.tool === 'pen') {
     if (pts.length === 1) return [[pts[0], pts[0]]]
     return pts.slice(1).map((p, i): [Point, Point] => [pts[i], p])
@@ -34,7 +100,12 @@ function outlineSegments(a: Annotation): [Point, Point][] {
     const br = { x: Math.max(s.x, e.x), y: Math.max(s.y, e.y) }
     const tr = { x: br.x, y: tl.y }
     const bl = { x: tl.x, y: br.y }
-    return [[tl, tr], [tr, br], [br, bl], [bl, tl]]
+    return [
+      [tl, tr],
+      [tr, br],
+      [br, bl],
+      [bl, tl]
+    ]
   }
   if (a.tool === 'ellipse') {
     const cx = (s.x + e.x) / 2
@@ -53,6 +124,19 @@ function outlineSegments(a: Annotation): [Point, Point][] {
 }
 
 export function hitTest(a: Annotation, p: Point, radius: number): boolean {
+  if (a.tool === 'text') {
+    const r = textBounds(a)
+    return (
+      p.x >= r.x - radius &&
+      p.x <= r.x + r.width + radius &&
+      p.y >= r.y - radius &&
+      p.y <= r.y + r.height + radius
+    )
+  }
+  if (a.tool === 'stamp') {
+    const c = a.points[0]
+    return Boolean(c) && Math.hypot(p.x - c.x, p.y - c.y) <= STAMP_SIZE / 2 + radius
+  }
   const reach = radius + a.width / 2
   return outlineSegments(a).some(([s, e]) => distToSegment(p, s, e) <= reach)
 }
@@ -66,6 +150,29 @@ export class AnnotationStore {
 
   get items(): readonly Annotation[] {
     return this.present
+  }
+
+  get canUndo(): boolean {
+    return this.past.length > 0
+  }
+
+  get canRedo(): boolean {
+    return this.future.length > 0
+  }
+
+  /** The topmost annotation near the point, or undefined. */
+  topmostAt(p: Point, radius = 8): Annotation | undefined {
+    for (let i = this.present.length - 1; i >= 0; i--) {
+      if (hitTest(this.present[i], p, radius)) return this.present[i]
+    }
+    return undefined
+  }
+
+  /** Moves an annotation as one undoable step. */
+  move(id: string, dx: number, dy: number): boolean {
+    if ((dx === 0 && dy === 0) || !this.present.some((a) => a.id === id)) return false
+    this.commit(this.present.map((a) => (a.id === id ? translateAnnotation(a, dx, dy) : a)))
+    return true
   }
 
   private commit(next: Annotation[]): void {
@@ -97,7 +204,7 @@ export class AnnotationStore {
     return true
   }
 
-  /** The UI must ask for confirmation before calling this. */
+  /** Clearing is one undoable step. */
   clear(): void {
     if (this.present.length === 0) return
     this.commit([])
@@ -120,7 +227,9 @@ export class AnnotationStore {
   }
 }
 
-export interface LaserPoint extends Point { t: number }
+export interface LaserPoint extends Point {
+  t: number
+}
 
 /** Laser pointer trail. Time is injected so expiry is testable. */
 export class LaserTrail {

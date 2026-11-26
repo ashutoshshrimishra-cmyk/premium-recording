@@ -1,32 +1,63 @@
-import { BrowserWindow, globalShortcut, screen, type WebContents } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  desktopCapturer,
+  globalShortcut,
+  screen,
+  type Display,
+  type WebContents
+} from 'electron'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import type { OverlayCommand, OverlayHistoryState } from '../../shared/ipc-schemas'
+import { screenshotFileName } from '../screenshotName'
 
-let overlayWindow: BrowserWindow | undefined
+const TOOLBAR_MAX_WIDTH = 960
+const TOOLBAR_HEIGHT = 132
+const TOOLBAR_MARGIN = 12
+
+let canvasWindow: BrowserWindow | undefined
+let toolbarWindow: BrowserWindow | undefined
 let recordingOwner: WebContents | undefined
+let overlayDisplay: Display | undefined
+let screenshotDir: string | undefined
 let interactive = true
-let annotationShortcutAvailable = false
+
+function isAlive(win: BrowserWindow | undefined): win is BrowserWindow {
+  return Boolean(win && !win.isDestroyed())
+}
 
 function sendInteractiveState(): void {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send(IPC_CHANNELS.overlayInteractiveChanged, interactive)
+  for (const win of [canvasWindow, toolbarWindow]) {
+    if (isAlive(win)) win.webContents.send(IPC_CHANNELS.overlayInteractiveChanged, interactive)
   }
 }
 
-export async function openAnnotationOverlay(
-  displayId: string,
-  owner: WebContents
-): Promise<void> {
-  closeAnnotationOverlay()
+function keepToolbarOnTop(): void {
+  if (isAlive(toolbarWindow)) toolbarWindow.moveTop()
+}
 
-  const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === displayId)
-  if (!display) {
-    throw new Error('The selected screen could not be mapped to an annotation display')
+async function loadView(win: BrowserWindow, view: 'overlay' | 'toolbar'): Promise<void> {
+  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+    const url = new URL(process.env.ELECTRON_RENDERER_URL)
+    url.searchParams.set('view', view)
+    await win.loadURL(url.toString())
+  } else {
+    await win.loadFile(join(__dirname, '../renderer/index.html'), { query: { view } })
   }
+}
 
-  recordingOwner = owner
-  interactive = true
+const sharedWebPreferences = {
+  preload: join(__dirname, '../preload/index.js'),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  backgroundThrottling: false
+}
+
+async function openCanvasWindow(display: Display): Promise<void> {
   const win = new BrowserWindow({
     ...display.bounds,
     show: false,
@@ -42,72 +73,192 @@ export async function openAnnotationOverlay(
     fullscreenable: false,
     hasShadow: false,
     autoHideMenuBar: true,
-    webPreferences: {
-      preload: join(__dirname, '../../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false
-    }
+    webPreferences: sharedWebPreferences
   })
-  overlayWindow = win
+  canvasWindow = win
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   win.on('closed', () => {
-    if (overlayWindow === win) overlayWindow = undefined
+    if (canvasWindow === win) canvasWindow = undefined
   })
-  win.webContents.once('render-process-gone', () => {
-    if (overlayWindow === win) requestRecordingStop()
-  })
+  // Clicking the canvas raises it; keep the toolbar above it.
+  win.on('focus', keepToolbarOnTop)
+  await loadView(win, 'overlay')
+  if (win.isDestroyed()) throw new Error('Annotation canvas closed before it was ready')
+  win.show()
+}
 
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    const url = new URL(process.env.ELECTRON_RENDERER_URL)
-    url.searchParams.set('view', 'overlay')
-    await win.loadURL(url.toString())
-  } else {
-    // Match the main window's packaged renderer path: out/main -> out/renderer.
-    await win.loadFile(join(__dirname, '../renderer/index.html'), {
-      query: { view: 'overlay' }
-    })
+async function openToolbarWindow(display: Display): Promise<void> {
+  const width = Math.min(TOOLBAR_MAX_WIDTH, display.bounds.width - TOOLBAR_MARGIN * 2)
+  const win = new BrowserWindow({
+    x: display.bounds.x + Math.round((display.bounds.width - width) / 2),
+    y: display.bounds.y + TOOLBAR_MARGIN,
+    width,
+    height: TOOLBAR_HEIGHT,
+    useContentSize: true,
+    show: false,
+    frame: false,
+    transparent: false,
+    backgroundColor: '#1b1c20',
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    title: 'Annotation toolbar',
+    webPreferences: sharedWebPreferences
+  })
+  toolbarWindow = win
+  win.setAlwaysOnTop(true, 'screen-saver')
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Keeps the toolbar out of the recording and out of screenshots.
+  win.setContentProtection(true)
+  win.on('closed', () => {
+    if (toolbarWindow === win) toolbarWindow = undefined
+  })
+  await loadView(win, 'toolbar')
+  if (win.isDestroyed()) throw new Error('Annotation toolbar closed before it was ready')
+  win.show()
+  win.moveTop()
+}
+
+/**
+ * Opens the capture canvas and the toolbar. A failure of either window is logged and does not
+ * stop the recording. Returns whether the toolbar is available.
+ */
+export async function openAnnotationOverlay(
+  displayId: string,
+  owner: WebContents,
+  saveDir: string
+): Promise<{ toolbar: boolean }> {
+  closeAnnotationOverlay()
+
+  const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === displayId)
+  if (!display) {
+    console.error('The selected screen could not be mapped to an annotation display')
+    return { toolbar: false }
   }
 
-  if (win.isDestroyed()) throw new Error('Annotation overlay closed before it was ready')
-  win.show()
-  win.focus()
+  recordingOwner = owner
+  overlayDisplay = display
+  screenshotDir = saveDir
+  interactive = true
+
+  try {
+    await openCanvasWindow(display)
+  } catch (error) {
+    console.error('Could not open the annotation canvas', error)
+    if (isAlive(canvasWindow)) canvasWindow.destroy()
+    canvasWindow = undefined
+  }
+
+  try {
+    await openToolbarWindow(display)
+  } catch (error) {
+    console.error('Could not open the annotation toolbar', error)
+    if (isAlive(toolbarWindow)) toolbarWindow.destroy()
+    toolbarWindow = undefined
+  }
+
   sendInteractiveState()
+  return { toolbar: isAlive(toolbarWindow) }
 }
 
 export function setAnnotationInteractive(nextInteractive: boolean): boolean {
-  const win = overlayWindow
-  if (!win || win.isDestroyed()) throw new Error('Annotation overlay is not running')
-  if (!nextInteractive && !annotationShortcutAvailable) {
-    throw new Error('Desktop mode is unavailable because Ctrl/Cmd+Shift+A is already in use')
-  }
+  const win = canvasWindow
+  if (!isAlive(win)) throw new Error('Annotation canvas is not running')
   interactive = nextInteractive
   win.setIgnoreMouseEvents(!interactive, { forward: true })
-  if (interactive) {
-    win.show()
-    win.focus()
-  }
+  keepToolbarOnTop()
   sendInteractiveState()
   return interactive
 }
 
 export function toggleAnnotationInteractive(): void {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  if (!isAlive(canvasWindow)) return
   setAnnotationInteractive(!interactive)
 }
 
+export function isAnnotationCanvasSender(senderId: number): boolean {
+  return isAlive(canvasWindow) && canvasWindow.webContents.id === senderId
+}
+
+export function isAnnotationToolbarSender(senderId: number): boolean {
+  return isAlive(toolbarWindow) && toolbarWindow.webContents.id === senderId
+}
+
 export function isAnnotationOverlaySender(senderId: number): boolean {
-  return Boolean(overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.webContents.id === senderId)
+  return isAnnotationCanvasSender(senderId) || isAnnotationToolbarSender(senderId)
+}
+
+/** Toolbar to canvas. Switching tools also switches between drawing and desktop (mouse) mode. */
+export function forwardOverlayCommand(command: OverlayCommand): boolean {
+  if (!isAlive(canvasWindow)) return false
+  if (command.type === 'tool') setAnnotationInteractive(command.tool !== 'mouse')
+  canvasWindow.webContents.send(IPC_CHANNELS.overlayCommandReceived, command)
+  return true
+}
+
+/** Canvas to toolbar. */
+export function forwardOverlayHistory(state: OverlayHistoryState): boolean {
+  if (!isAlive(toolbarWindow)) return false
+  toolbarWindow.webContents.send(IPC_CHANNELS.overlayHistoryChanged, state)
+  return true
+}
+
+async function writeScreenshot(png: Buffer): Promise<string> {
+  const directories = [screenshotDir, app.getPath('pictures')].filter((dir): dir is string =>
+    Boolean(dir)
+  )
+  let lastError: unknown
+  for (const directory of directories) {
+    try {
+      await mkdir(directory, { recursive: true })
+      const filePath = join(directory, screenshotFileName(new Date()))
+      await writeFile(filePath, png)
+      return filePath
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Could not write the screenshot')
+}
+
+/**
+ * Captures the annotated display at full pixel size. The toolbar is excluded by content
+ * protection, the canvas window (with the drawings) is included.
+ */
+export async function saveAnnotationScreenshot(): Promise<string> {
+  const display = overlayDisplay
+  if (!display) throw new Error('Annotation overlay is not running')
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: {
+      width: Math.round(display.bounds.width * display.scaleFactor),
+      height: Math.round(display.bounds.height * display.scaleFactor)
+    },
+    fetchWindowIcons: false
+  })
+  const source =
+    sources.find((candidate) => candidate.display_id === String(display.id)) ??
+    (sources.length === 1 ? sources[0] : undefined)
+  if (!source || source.thumbnail.isEmpty()) throw new Error('The screen could not be captured')
+  return writeScreenshot(source.thumbnail.toPNG())
 }
 
 export function closeAnnotationOverlay(): void {
-  const win = overlayWindow
-  overlayWindow = undefined
+  const windows = [canvasWindow, toolbarWindow]
+  canvasWindow = undefined
+  toolbarWindow = undefined
   interactive = true
-  if (win && !win.isDestroyed()) win.destroy()
+  for (const win of windows) {
+    if (isAlive(win)) win.destroy()
+  }
   recordingOwner = undefined
+  overlayDisplay = undefined
+  screenshotDir = undefined
 }
 
 export function requestRecordingStop(): boolean {
@@ -117,7 +268,7 @@ export function requestRecordingStop(): boolean {
 }
 
 export function registerOverlayShortcuts(): void {
-  annotationShortcutAvailable = globalShortcut.register('CommandOrControl+Shift+A', () => {
+  globalShortcut.register('CommandOrControl+Shift+A', () => {
     toggleAnnotationInteractive()
   })
   globalShortcut.register('CommandOrControl+Shift+S', () => {
@@ -128,5 +279,4 @@ export function registerOverlayShortcuts(): void {
 export function unregisterOverlayShortcuts(): void {
   globalShortcut.unregister('CommandOrControl+Shift+A')
   globalShortcut.unregister('CommandOrControl+Shift+S')
-  annotationShortcutAvailable = false
 }

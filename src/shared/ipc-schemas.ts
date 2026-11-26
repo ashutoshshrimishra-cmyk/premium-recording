@@ -86,6 +86,51 @@ export const overlaySetInteractiveOutputSchema = z.boolean()
 export const overlayRequestStopInputSchema = z.void()
 export const overlayRequestStopOutputSchema = z.boolean()
 
+export const overlayToolSchema = z.enum([
+  'mouse',
+  'select',
+  'text',
+  'draw',
+  'stamp',
+  'spotlight',
+  'eraser'
+])
+export const overlayShapeSchema = z.enum([
+  'pen',
+  'line',
+  'arrow',
+  'doubleArrow',
+  'rect',
+  'roundRect',
+  'ellipse'
+])
+export const overlayStampSchema = z.enum(['check', 'cross', 'star', 'heart', 'question', 'arrow'])
+
+/** Commands sent from the toolbar window to the annotation canvas window (through the main process). */
+export const overlayCommandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('tool'), tool: overlayToolSchema }),
+  z.object({ type: z.literal('shape'), shape: overlayShapeSchema }),
+  z.object({ type: z.literal('stamp'), stamp: overlayStampSchema }),
+  z.object({ type: z.literal('color'), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }),
+  z.object({ type: z.literal('width'), width: z.number().int().min(1).max(40) }),
+  z.object({ type: z.literal('fontSize'), fontSize: z.number().int().min(8).max(200) }),
+  z.object({ type: z.literal('undo') }),
+  z.object({ type: z.literal('redo') }),
+  z.object({ type: z.literal('clear') })
+])
+export const overlayCommandOutputSchema = z.boolean()
+
+/** History state sent from the canvas window to the toolbar window. */
+export const overlayHistoryStateSchema = z.object({
+  canUndo: z.boolean(),
+  canRedo: z.boolean(),
+  hasAnnotations: z.boolean()
+})
+export const overlayReportHistoryOutputSchema = z.boolean()
+
+export const overlaySaveScreenshotInputSchema = z.void()
+export const overlaySaveScreenshotOutputSchema = z.object({ filePath: z.string().min(1) })
+
 export type Settings = z.infer<typeof settingsSchema>
 export type GetSourcesInput = z.infer<typeof getSourcesInputSchema>
 export type GetSourcesOutput = z.infer<typeof getSourcesOutputSchema>
@@ -108,3 +153,9 @@ export type OverlaySetInteractiveInput = z.infer<typeof overlaySetInteractiveInp
 export type OverlaySetInteractiveOutput = z.infer<typeof overlaySetInteractiveOutputSchema>
 export type OverlayRequestStopInput = z.infer<typeof overlayRequestStopInputSchema>
 export type OverlayRequestStopOutput = z.infer<typeof overlayRequestStopOutputSchema>
+export type OverlayTool = z.infer<typeof overlayToolSchema>
+export type OverlayShape = z.infer<typeof overlayShapeSchema>
+export type OverlayStamp = z.infer<typeof overlayStampSchema>
+export type OverlayCommand = z.infer<typeof overlayCommandSchema>
+export type OverlayHistoryState = z.infer<typeof overlayHistoryStateSchema>
+export type OverlaySaveScreenshotOutput = z.infer<typeof overlaySaveScreenshotOutputSchema>

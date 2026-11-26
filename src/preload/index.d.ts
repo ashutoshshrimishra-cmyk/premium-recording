@@ -12,7 +12,10 @@ import type {
   RecordingStopOutput,
   OverlaySetInteractiveInput,
   OverlaySetInteractiveOutput,
-  OverlayRequestStopOutput
+  OverlayRequestStopOutput,
+  OverlayCommand,
+  OverlayHistoryState,
+  OverlaySaveScreenshotOutput
 } from '../shared/ipc-schemas'
 
 interface RecorderApi {
@@ -28,6 +31,11 @@ interface RecorderApi {
   onRecordingStopRequested(callback: () => void): () => void
   overlaySetInteractive(input: OverlaySetInteractiveInput): Promise<OverlaySetInteractiveOutput>
   overlayRequestStop(): Promise<OverlayRequestStopOutput>
+  overlaySendCommand(command: OverlayCommand): Promise<boolean>
+  onOverlayCommand(callback: (command: OverlayCommand) => void): () => void
+  overlayReportHistory(state: OverlayHistoryState): Promise<boolean>
+  onOverlayHistoryChanged(callback: (state: OverlayHistoryState) => void): () => void
+  overlaySaveScreenshot(): Promise<OverlaySaveScreenshotOutput>
   onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void
 }
 

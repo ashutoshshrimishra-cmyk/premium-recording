@@ -133,7 +133,8 @@ export const StartButton = memo(function StartButton() {
             </div>
           )}
           <div className="mt-1 text-[var(--muted)]">
-            Draw on the overlay · Ctrl/Cmd+Shift+A toggles desktop mode · Ctrl/Cmd+Shift+S stops
+            Use the annotation toolbar at the top of the screen (it is not recorded). Mouse mode
+            lets you use the desktop · Ctrl/Cmd+Shift+A toggles it · Ctrl/Cmd+Shift+S stops
           </div>
         </div>
       )}

@@ -33,6 +33,12 @@ import {
   overlaySetInteractiveOutputSchema,
   overlayRequestStopInputSchema,
   overlayRequestStopOutputSchema,
+  overlayCommandSchema,
+  overlayCommandOutputSchema,
+  overlayHistoryStateSchema,
+  overlayReportHistoryOutputSchema,
+  overlaySaveScreenshotInputSchema,
+  overlaySaveScreenshotOutputSchema,
   type Settings
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
@@ -45,9 +51,14 @@ import {
 } from '../recording'
 import {
   closeAnnotationOverlay,
+  forwardOverlayCommand,
+  forwardOverlayHistory,
+  isAnnotationCanvasSender,
   isAnnotationOverlaySender,
+  isAnnotationToolbarSender,
   openAnnotationOverlay,
   requestRecordingStop,
+  saveAnnotationScreenshot,
   setAnnotationInteractive
 } from '../windows/overlay'
 
@@ -218,7 +229,9 @@ export function registerIpc(): void {
         await sleep(300)
       }
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
-      await openAnnotationOverlay(source.display_id, owner)
+      const overlay = await openAnnotationOverlay(source.display_id, owner, recording.saveDir)
+      // Without a toolbar the user could not stop from the screen, so keep the app window visible.
+      if (!overlay.toolbar && win && !win.isDestroyed() && win.isMinimized()) win.restore()
       await sleep(200)
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
 
@@ -280,8 +293,8 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.overlaySetInteractive, (event, input: unknown) => {
     validateSender(event)
-    if (!isAnnotationOverlaySender(event.sender.id)) {
-      throw new Error('Only the annotation overlay can change interaction mode')
+    if (!isAnnotationCanvasSender(event.sender.id)) {
+      throw new Error('Only the annotation canvas can change interaction mode')
     }
     const { interactive } = overlaySetInteractiveInputSchema.parse(input)
     return overlaySetInteractiveOutputSchema.parse(setAnnotationInteractive(interactive))
@@ -294,5 +307,31 @@ export function registerIpc(): void {
     }
     overlayRequestStopInputSchema.parse(input)
     return overlayRequestStopOutputSchema.parse(requestRecordingStop())
+  })
+  ipcMain.handle(IPC_CHANNELS.overlayCommand, (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationToolbarSender(event.sender.id)) {
+      throw new Error('Only the annotation toolbar can send annotation commands')
+    }
+    const command = overlayCommandSchema.parse(input)
+    return overlayCommandOutputSchema.parse(forwardOverlayCommand(command))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.overlayReportHistory, (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationCanvasSender(event.sender.id)) {
+      throw new Error('Only the annotation canvas can report history')
+    }
+    const state = overlayHistoryStateSchema.parse(input)
+    return overlayReportHistoryOutputSchema.parse(forwardOverlayHistory(state))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.overlaySaveScreenshot, async (event, input: unknown) => {
+    validateSender(event)
+    if (!isAnnotationToolbarSender(event.sender.id)) {
+      throw new Error('Only the annotation toolbar can save screenshots')
+    }
+    overlaySaveScreenshotInputSchema.parse(input)
+    return overlaySaveScreenshotOutputSchema.parse({ filePath: await saveAnnotationScreenshot() })
   })
 }
