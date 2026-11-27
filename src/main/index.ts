@@ -2,7 +2,8 @@ import { app, shell, BrowserWindow, desktopCapturer, session } from 'electron'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { registerIpc } from './ipc'
+import { registerIpc, trustedRenderer } from './ipc'
+import { isTrustedRendererUrl } from './ipc/trustedSender'
 import { getLogPath, log } from './logger'
 import { BUILD_COMMIT, BUILD_TIME } from './buildInfo'
 import { release } from 'node:os'
@@ -43,7 +44,11 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const protocol = new URL(url).protocol
-      if (protocol === 'https:' || protocol === 'http:') void shell.openExternal(url)
+      if (protocol === 'https:' || protocol === 'http:') {
+        shell.openExternal(url).catch((error: unknown) => {
+          log('warn', `Could not open external link ${url.slice(0, 200)}`, error)
+        })
+      }
     } catch {
       // Invalid and non-web URLs stay blocked.
     }
@@ -99,17 +104,24 @@ app.whenReady().then(() => {
   }
   const allowedPermissions = new Set<string>(['media', 'audioCapture', 'display-capture'])
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
-    callback(allowedPermissions.has(permission) && isOwnOrigin(details.requestingUrl))
+    // The full page URL is available here, so only the bundled renderer (or dev server) is allowed.
+    callback(
+      allowedPermissions.has(permission) &&
+        isTrustedRendererUrl(details.requestingUrl, trustedRenderer())
+    )
   })
   session.defaultSession.setPermissionCheckHandler(
     (_contents, permission, requestingOrigin) =>
       allowedPermissions.has(permission) && isOwnOrigin(requestingOrigin)
   )
   session.defaultSession.setDisplayMediaRequestHandler(
-    async (_request, callback) => {
+    async (request, callback) => {
       try {
         const sourceId = getSelectedSourceId()
-        if (!sourceId) {
+        // Only this app's own top-level page gets the source chosen in the app.
+        const frameUrl = request.frame?.url ?? ''
+        if (!sourceId || !isTrustedRendererUrl(frameUrl, trustedRenderer())) {
+          if (sourceId) log('warn', `Screen capture request from ${frameUrl.slice(0, 200)} refused`)
           callback({})
           return
         }

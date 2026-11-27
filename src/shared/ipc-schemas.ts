@@ -1,5 +1,17 @@
 import { z } from 'zod'
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS } from './shortcuts'
+import { MAX_PATH_LENGTH, looksAbsolutePath } from './pathRules'
+
+const pathString = z.string().min(1).max(MAX_PATH_LENGTH)
+/** A bounded absolute file path (POSIX, Windows drive or UNC). */
+export const absolutePathSchema = pathString.refine(looksAbsolutePath, {
+  message: 'Expected an absolute path'
+})
+const sourceIdSchema = z
+  .string()
+  .max(200)
+  .regex(/^(screen|window):/)
+const mimeTypeSchema = z.string().min(1).max(200)
 
 const shortcutString = (fallback: string): z.ZodDefault<z.ZodString> =>
   z.string().min(1).max(60).default(fallback)
@@ -13,7 +25,7 @@ export const shortcutsSchema = z.object({
 
 /** Fields added after 1.2 have defaults, so settings saved by older versions still load. */
 export const settingsSchema = z.object({
-  saveDir: z.string().min(1),
+  saveDir: pathString,
   fps: z.number().int().positive(),
   resolution: z.enum(['1080p', '1440p', '4K']),
   noiseSuppression: z.boolean(),
@@ -43,7 +55,7 @@ export const shortcutsSuspendOutputSchema = z.boolean()
 export const shortcutActionEventSchema = z.enum(['startStop', 'pauseResume'])
 
 export const recentRecordingSchema = z.object({
-  filePath: z.string().min(1),
+  filePath: absolutePathSchema,
   sizeBytes: z.number().nonnegative(),
   durationMs: z.number().nonnegative(),
   savedAt: z.string()
@@ -51,13 +63,13 @@ export const recentRecordingSchema = z.object({
 export const recentListInputSchema = z.void()
 export const recentListOutputSchema = z.array(recentRecordingSchema)
 export const recentAddInputSchema = z.object({
-  filePath: z.string().min(1),
+  filePath: absolutePathSchema,
   durationMs: z
     .number()
     .nonnegative()
     .max(1000 * 60 * 60 * 72)
 })
-export const recentPathInputSchema = z.object({ filePath: z.string().min(1) })
+export const recentPathInputSchema = z.object({ filePath: absolutePathSchema })
 export const recentActionOutputSchema = z.boolean()
 
 export const abandonedPartSchema = z.object({
@@ -68,8 +80,8 @@ export const abandonedPartSchema = z.object({
 })
 export const recoveryListInputSchema = z.void()
 export const recoveryListOutputSchema = z.array(abandonedPartSchema)
-export const recoveryPathInputSchema = z.object({ partPath: z.string().min(1) })
-export const recoveryRecoverOutputSchema = z.object({ filePath: z.string().min(1) })
+export const recoveryPathInputSchema = z.object({ partPath: absolutePathSchema })
+export const recoveryRecoverOutputSchema = z.object({ filePath: pathString })
 export const recoveryDiscardOutputSchema = z.boolean()
 
 export const getSourcesInputSchema = z.object({ kind: z.enum(['screen', 'window']) })
@@ -107,29 +119,28 @@ export const getDisplaysOutputSchema = z.array(
 )
 
 export const pickFolderInputSchema = z.void()
-export const pickFolderOutputSchema = z.string().nullable()
+export const pickFolderOutputSchema = pathString.nullable()
 
 export const getSettingsInputSchema = z.void()
 export const getSettingsOutputSchema = settingsSchema
 
-export const setSettingsInputSchema = settingsSchema
+/** The save folder is not accepted here, it only changes through the main-process folder picker. */
+export const setSettingsInputSchema = settingsSchema.omit({ saveDir: true })
 export const setSettingsOutputSchema = settingsSchema
 
-export const recordingSelectSourceInputSchema = z.object({
-  sourceId: z.string().regex(/^(screen|window):/)
-})
+export const recordingSelectSourceInputSchema = z.object({ sourceId: sourceIdSchema })
 export const recordingSelectSourceOutputSchema = z.boolean()
 
+/** No save folder: the main process records into its stored settings folder. */
 export const recordingStartInputSchema = z.object({
-  sourceId: z.string().regex(/^(screen|window):/),
-  mimeType: z.string().min(1),
+  sourceId: sourceIdSchema,
+  mimeType: mimeTypeSchema,
   fps: z.number().int().min(1).max(60),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  saveDir: z.string().min(1)
+  width: z.number().int().positive().max(16384),
+  height: z.number().int().positive().max(16384)
 })
 export const recordingStartOutputSchema = z.object({
-  filePath: z.string().min(1),
+  filePath: pathString,
   sessionId: z.string().min(16),
   overlay: z.object({
     canvas: z.boolean(),
@@ -154,8 +165,8 @@ export const recordingChunkInputSchema = z.object({
 export const recordingChunkOutputSchema = z.boolean()
 
 export const recordingStopInputSchema = z.object({
-  sessionId: z.string().min(16),
-  mimeType: z.string().min(1),
+  sessionId: z.string().min(16).max(100),
+  mimeType: mimeTypeSchema,
   discard: z.boolean().optional()
 })
 /**
@@ -163,12 +174,12 @@ export const recordingStopInputSchema = z.object({
  * kept, the .part path so the UI can point to recovery.
  */
 export const recordingStopOutputSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), filePath: z.string().min(1) }),
+  z.object({ ok: z.literal(true), filePath: pathString }),
   z.object({
     ok: z.literal(false),
     code: z.enum(['cancelled', 'empty', 'save-failed', 'error']),
     message: z.string().max(2000),
-    preservedPath: z.string().min(1).optional()
+    preservedPath: pathString.optional()
   })
 ])
 
@@ -243,7 +254,7 @@ export const overlayHistoryStateSchema = z.object({
 export const overlayReportHistoryOutputSchema = z.boolean()
 
 export const overlaySaveScreenshotInputSchema = z.void()
-export const overlaySaveScreenshotOutputSchema = z.object({ filePath: z.string().min(1) })
+export const overlaySaveScreenshotOutputSchema = z.object({ filePath: pathString })
 
 /** Microphone commands sent from the annotation panel to the recording window (through the main process). */
 export const micCommandSchema = z.discriminatedUnion('type', [
@@ -285,7 +296,7 @@ export const diagnosticsGetInfoOutputSchema = z.object({
 })
 export const diagnosticsShowLogInputSchema = z.void()
 export const diagnosticsShowLogOutputSchema = z.boolean()
-export const diagnosticsProbeFileInputSchema = z.object({ filePath: z.string().min(1) })
+export const diagnosticsProbeFileInputSchema = z.object({ filePath: absolutePathSchema })
 export const diagnosticsProbeFileOutputSchema = z.enum(['present', 'absent', 'unknown'])
 
 export type Settings = z.infer<typeof settingsSchema>

@@ -17,6 +17,8 @@ import { open, stat } from 'node:fs/promises'
 import { release } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import Store from 'electron-store'
+import { is } from '@electron-toolkit/utils'
+import { isTopLevelFrame, isTrustedRendererUrl, type TrustedRenderer } from './trustedSender'
 import {
   getSourcesInputSchema,
   getSourcesOutputSchema,
@@ -84,7 +86,7 @@ import {
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { detectAudioTrack } from '../../shared/containerProbe'
-import { addRecent, pruneMissing } from '../../shared/recentRecordings'
+import { addRecent, pruneMissing, sanitizeRecent } from '../../shared/recentRecordings'
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_ACTIONS,
@@ -165,19 +167,28 @@ function getSettingsDefaults(): Settings {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-function isFromOwnApp(event: IpcMainInvokeEvent): boolean {
-  const frameUrl = event.senderFrame?.url
-  if (!frameUrl || !BrowserWindow.fromWebContents(event.sender)) return false
-  if (frameUrl.startsWith('file://')) return true
-
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (!rendererUrl) return false
-
-  try {
-    return new URL(frameUrl).origin === new URL(rendererUrl).origin
-  } catch {
-    return false
+/** The pages allowed to use IPC: the bundled renderer, plus the dev server in development. */
+export function trustedRenderer(): TrustedRenderer {
+  return {
+    indexHtmlPath: join(__dirname, '../renderer/index.html'),
+    devServerUrl: is.dev ? process.env.ELECTRON_RENDERER_URL : undefined,
+    platform: process.platform
   }
+}
+
+const blockedSenders = new Set<string>()
+
+function isFromOwnApp(event: IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame
+  const frameUrl = frame?.url
+  if (!frameUrl || !BrowserWindow.fromWebContents(event.sender)) return false
+  if (isTopLevelFrame(frame) && isTrustedRendererUrl(frameUrl, trustedRenderer())) return true
+  const key = `${isTopLevelFrame(frame) ? 'top' : 'subframe'} ${frameUrl.slice(0, 300)}`
+  if (!blockedSenders.has(key) && blockedSenders.size < 50) {
+    blockedSenders.add(key)
+    log('warn', `IPC request blocked from untrusted sender: ${key}`)
+  }
+  return false
 }
 
 function validateSender(event: IpcMainInvokeEvent): void {
@@ -262,7 +273,10 @@ export function registerIpc(): void {
     const result = owner
       ? await dialog.showOpenDialog(owner, options)
       : await dialog.showOpenDialog(options)
-    return pickFolderOutputSchema.parse(result.canceled ? null : (result.filePaths[0] ?? null))
+    const folder = result.canceled ? null : (result.filePaths[0] ?? null)
+    // The save folder only changes here, through the native picker. setSettings ignores it.
+    if (folder && isAbsolute(folder)) store.set('saveDir', folder)
+    return pickFolderOutputSchema.parse(folder)
   })
 
   const readSettings = (): Settings => {
@@ -305,15 +319,20 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.setSettings, (event, input: unknown) => {
     validateSender(event)
+    // The schema has no saveDir, so a renderer value is dropped: the save folder only changes
+    // through the folder picker. Shortcuts only change through shortcutsSet, which validates them.
     const settings = setSettingsInputSchema.parse(input)
-    const previous = readSettings().shortcuts
-    // Shortcuts are only changed through shortcutsSet, which validates them.
+    const current = readSettings()
     store.set({
       ...settings,
       audioDeviceId: settings.audioDeviceId ?? 'default',
-      shortcuts: previous
+      shortcuts: current.shortcuts
     })
-    return setSettingsOutputSchema.parse({ ...settings, shortcuts: previous })
+    return setSettingsOutputSchema.parse({
+      ...settings,
+      saveDir: current.saveDir,
+      shortcuts: current.shortcuts
+    })
   })
 
   ipcMain.handle(IPC_CHANNELS.shortcutsGet, (event, input: unknown) => {
@@ -365,7 +384,10 @@ export function registerIpc(): void {
     defaults: { items: [] }
   })
   const readRecent = (): RecentRecording[] => {
-    const items = pruneMissing(recentStore.get('items', []), (filePath) => existsSync(filePath))
+    // Stored entries are checked one by one, a damaged entry is dropped instead of breaking the list.
+    const items = pruneMissing(sanitizeRecent(recentStore.get('items', [])), (filePath) =>
+      existsSync(filePath)
+    )
     recentStore.set('items', items)
     return items
   }
@@ -550,7 +572,8 @@ export function registerIpc(): void {
     try {
       const source = await findCaptureSource(recording.sourceId)
       ensureActive()
-      const saveDir = recording.saveDir
+      // Always the folder stored by the main process (chosen with the folder picker).
+      const saveDir = readSettings().saveDir
 
       const filePath = await startRecordingFile(saveDir, new Date(), recording.mimeType)
       session.tempPath = getActiveTempPath()

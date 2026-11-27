@@ -1,3 +1,5 @@
+import { MAX_PATH_LENGTH, looksAbsolutePath } from './pathRules'
+
 export interface RecentRecordingEntry {
   filePath: string
   sizeBytes: number
@@ -16,6 +18,40 @@ export function addRecent(
 ): RecentRecordingEntry[] {
   const key = entry.filePath.toLowerCase()
   return [entry, ...list.filter((item) => item.filePath.toLowerCase() !== key)].slice(0, max)
+}
+
+function isRecentEntry(value: unknown): value is RecentRecordingEntry {
+  if (typeof value !== 'object' || value === null) return false
+  const item = value as Record<string, unknown>
+  const finiteNonNegative = (n: unknown): boolean =>
+    typeof n === 'number' && Number.isFinite(n) && n >= 0
+  return (
+    typeof item.filePath === 'string' &&
+    item.filePath.length <= MAX_PATH_LENGTH &&
+    looksAbsolutePath(item.filePath) &&
+    /\.(?:mp4|webm)$/i.test(item.filePath) &&
+    finiteNonNegative(item.sizeBytes) &&
+    finiteNonNegative(item.durationMs) &&
+    typeof item.savedAt === 'string' &&
+    !Number.isNaN(Date.parse(item.savedAt))
+  )
+}
+
+/**
+ * Validates the persisted list entry by entry. Damaged or foreign entries (relative paths, other
+ * file types, bad numbers) are dropped and the list is capped.
+ */
+export function sanitizeRecent(raw: unknown, max = MAX_RECENT_RECORDINGS): RecentRecordingEntry[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter(isRecentEntry)
+    .slice(0, max)
+    .map(({ filePath, sizeBytes, durationMs, savedAt }) => ({
+      filePath,
+      sizeBytes,
+      durationMs,
+      savedAt
+    }))
 }
 
 /** Drops entries whose file no longer exists. */

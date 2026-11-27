@@ -4,6 +4,7 @@ import type {
   GetSourcesOutput,
   PickFolderOutput,
   Settings,
+  SetSettingsInput,
   RecordingSelectSourceInput,
   RecordingStartInput,
   RecordingStartOutput,
@@ -37,7 +38,7 @@ interface RecorderApi {
   getDisplays(): Promise<GetDisplaysOutput>
   pickFolder(): Promise<PickFolderOutput>
   getSettings(): Promise<Settings>
-  setSettings(settings: Settings): Promise<Settings>
+  setSettings(settings: SetSettingsInput): Promise<Settings>
   recordingSelectSource(input: RecordingSelectSourceInput): Promise<boolean>
   recordingStart(input: RecordingStartInput): Promise<RecordingStartOutput>
   recordingChunk(input: RecordingChunkInput): Promise<RecordingChunkOutput>

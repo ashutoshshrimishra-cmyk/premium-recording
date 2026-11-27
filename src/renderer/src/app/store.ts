@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { RecentRecording, Settings } from '../../../shared/ipc-schemas'
+import type { RecentRecording, SetSettingsInput, Settings } from '../../../shared/ipc-schemas'
 import { DEFAULT_SHORTCUTS } from '../../../shared/shortcuts'
 import type { RegionFraction } from '../recorder/cropMath'
 
@@ -54,8 +54,8 @@ function debounceSettings(state: RecorderState): void {
 
   if (persistTimer) clearTimeout(persistTimer)
   persistTimer = setTimeout(() => {
-    const settings: Settings = {
-      saveDir: state.saveDir,
+    // saveDir is not sent: the main process stores it when the folder picker returns.
+    const settings: SetSettingsInput = {
       fps: state.fps,
       resolution: state.resolution,
       noiseSuppression: state.noiseSuppression,
@@ -111,10 +111,7 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
     set({ noiseSuppression })
     debounceSettings(get())
   },
-  setSaveDir: (saveDir) => {
-    set({ saveDir })
-    debounceSettings(get())
-  },
+  setSaveDir: (saveDir) => set({ saveDir }),
   setAudioDeviceId: (audioDeviceId) => {
     set({ audioDeviceId })
     debounceSettings(get())

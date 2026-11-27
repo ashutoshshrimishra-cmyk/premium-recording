@@ -1,4 +1,4 @@
-import { readdir, stat, unlink } from 'node:fs/promises'
+import { lstat, readdir, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { finalizeWithoutOverwrite } from './recording'
 
@@ -39,7 +39,8 @@ export async function listAbandonedParts(
     const partPath = join(directory, name)
     if (active && resolve(partPath) === active) continue
     try {
-      const info = await stat(partPath)
+      // lstat: a symlink or other non-regular entry is never offered for recovery.
+      const info = await lstat(partPath)
       if (!info.isFile()) continue
       parts.push({
         partPath,
@@ -54,9 +55,16 @@ export async function listAbandonedParts(
   return parts.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
 }
 
+/** Rejects symlinks, folders and devices so recover and delete only touch real files. */
+async function regularFileSize(partPath: string): Promise<number> {
+  const info = await lstat(partPath)
+  if (!info.isFile()) throw new Error('That entry is not a regular recording file')
+  return info.size
+}
+
 /** Finalizes an abandoned .part to a unique name that never overwrites a file. */
 export async function recoverPart(partPath: string): Promise<string> {
-  const { size } = await stat(partPath)
+  const size = await regularFileSize(partPath)
   if (size === 0) {
     await unlink(partPath).catch(() => undefined)
     throw new Error('The partial recording was empty and has been removed')
@@ -65,5 +73,6 @@ export async function recoverPart(partPath: string): Promise<string> {
 }
 
 export async function deletePart(partPath: string): Promise<void> {
+  await regularFileSize(partPath)
   await unlink(partPath)
 }

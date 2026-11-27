@@ -135,7 +135,6 @@ export const StartButton = memo(function StartButton() {
         fps,
         width,
         height,
-        saveDir,
         audioDeviceId,
         noiseSuppression,
         region: captureMode === 'region' ? region : undefined,

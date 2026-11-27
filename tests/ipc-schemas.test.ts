@@ -216,9 +216,11 @@ describe('settings backward compatibility', () => {
 describe('recovery schemas', () => {
   it('accepts valid payloads and rejects empty paths', async () => {
     const s = await import('../src/shared/ipc-schemas')
-    expect(s.recoveryPathInputSchema.parse({ partPath: 'a.mp4.part' })).toEqual({
-      partPath: 'a.mp4.part'
+    expect(s.recoveryPathInputSchema.parse({ partPath: 'C:\\v\\a.mp4.part' })).toEqual({
+      partPath: 'C:\\v\\a.mp4.part'
     })
+    // Relative paths never match a file in the save folder, so they are rejected up front.
+    expect(() => s.recoveryPathInputSchema.parse({ partPath: 'a.mp4.part' })).toThrow()
     expect(() => s.recoveryPathInputSchema.parse({ partPath: '' })).toThrow()
     expect(() => s.recoveryPathInputSchema.parse({})).toThrow()
     expect(s.recoveryListOutputSchema.parse([])).toEqual([])

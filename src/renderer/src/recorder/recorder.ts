@@ -104,7 +104,6 @@ export class ScreenRecorder {
     fps: number
     width: number
     height: number
-    saveDir: string
     audioDeviceId: string
     noiseSuppression: boolean
     region?: RegionFraction
@@ -300,8 +299,7 @@ export class ScreenRecorder {
         mimeType,
         fps: options.fps,
         width: options.width,
-        height: options.height,
-        saveDir: options.saveDir
+        height: options.height
       })
       this.fileStarted = true
       this.sessionId = started.sessionId
