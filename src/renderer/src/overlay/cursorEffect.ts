@@ -90,3 +90,8 @@ const CONVERGED_DISTANCE = 0.5
 export function hasConverged(a: Position, b: Position): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) < CONVERGED_DISTANCE
 }
+
+/** True when the cursor layer has anything to draw. With every effect off it stays idle. */
+export function cursorEffectsActive(settings: CursorEffectSettings): boolean {
+  return settings.highlight || settings.ripple || settings.drawPointer
+}

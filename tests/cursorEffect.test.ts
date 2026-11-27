@@ -3,12 +3,21 @@ import {
   RIPPLE_DURATION_MS,
   addRipple,
   createRippleState,
+  cursorEffectsActive,
   defaultCursorEffect,
   hasConverged,
   smoothPosition,
   stepRipples
 } from '../src/renderer/src/overlay/cursorEffect'
-import { sameSample, toDisplayRelative } from '../src/main/windows/cursorMath'
+import {
+  CURSOR_IDLE_AFTER_MS,
+  CURSOR_IDLE_POLL_MS,
+  CURSOR_POLL_MS,
+  displayChangeAction,
+  nextCursorPollDelay,
+  sameSample,
+  toDisplayRelative
+} from '../src/main/windows/cursorMath'
 
 describe('cursor effect', () => {
   it('has the documented defaults', () => {
@@ -56,5 +65,34 @@ describe('cursor math', () => {
     const sample = { x: 1, y: 2, inside: true }
     expect(sameSample(sample, { ...sample })).toBe(true)
     expect(sameSample(undefined, sample)).toBe(false)
+  })
+})
+
+describe('cursor layer idle decision', () => {
+  it('is idle only when every effect is off', () => {
+    const off = { ...defaultCursorEffect, highlight: false, ripple: false, drawPointer: false }
+    expect(cursorEffectsActive(off)).toBe(false)
+    expect(cursorEffectsActive({ ...off, highlight: true })).toBe(true)
+    expect(cursorEffectsActive({ ...off, ripple: true })).toBe(true)
+    expect(cursorEffectsActive({ ...off, drawPointer: true })).toBe(true)
+  })
+})
+
+describe('cursor polling backoff', () => {
+  it('polls fast while moving and slower once the pointer rests', () => {
+    expect(nextCursorPollDelay(0)).toBe(CURSOR_POLL_MS)
+    expect(nextCursorPollDelay(CURSOR_IDLE_AFTER_MS - 1)).toBe(CURSOR_POLL_MS)
+    expect(nextCursorPollDelay(CURSOR_IDLE_AFTER_MS)).toBe(CURSOR_IDLE_POLL_MS)
+    expect(CURSOR_IDLE_POLL_MS).toBeLessThanOrEqual(50)
+  })
+})
+
+describe('display change handling', () => {
+  it('reacts only to the recorded display', () => {
+    expect(displayChangeAction(1, 2, 'metrics')).toBe('ignore')
+    expect(displayChangeAction(1, 2, 'removed')).toBe('ignore')
+    expect(displayChangeAction(undefined, 1, 'removed')).toBe('ignore')
+    expect(displayChangeAction(1, 1, 'metrics')).toBe('resize')
+    expect(displayChangeAction(1, 1, 'removed')).toBe('close-canvas')
   })
 })

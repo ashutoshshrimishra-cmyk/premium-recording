@@ -27,6 +27,7 @@ import {
   SMOOTHING_ALPHA,
   addRipple,
   createRippleState,
+  cursorEffectsActive,
   defaultCursorEffect,
   hasConverged,
   smoothPosition,
@@ -93,6 +94,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
   const hookSeenRef = useRef(false)
   const cursorFrameRef = useRef<number | null>(null)
   const cursorTickRef = useRef<() => void>(() => undefined)
+  const cursorLayerDirtyRef = useRef(false)
 
   if (storeRef.current === null) storeRef.current = new AnnotationStore()
 
@@ -333,6 +335,18 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
       const canvas = cursorCanvasRef.current
       const context = canvas?.getContext('2d')
       if (!canvas || !context) return
+      if (!cursorEffectsActive(cursorSettingsRef.current)) {
+        // Every effect is off: clear what was drawn once, then stop scheduling frames.
+        if (cursorLayerDirtyRef.current) {
+          context.setTransform(1, 0, 0, 1, 0, 0)
+          context.clearRect(0, 0, canvas.width, canvas.height)
+          cursorLayerDirtyRef.current = false
+        }
+        ripplesRef.current.ripples = []
+        cursorShownRef.current = cursorTargetRef.current
+        return
+      }
+      cursorLayerDirtyRef.current = true
       const bounds = canvas.getBoundingClientRect()
       const ratio = Math.max(1, window.devicePixelRatio || 1)
       const pixelWidth = Math.max(1, Math.round(bounds.width * ratio))
@@ -362,7 +376,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
     const offCursor = window.api.onOverlayCursor((cursor) => {
       cursorTargetRef.current = { x: cursor.x, y: cursor.y }
       cursorInsideRef.current = cursor.inside
-      scheduleCursor()
+      if (cursorEffectsActive(cursorSettingsRef.current)) scheduleCursor()
     })
     const offClick = window.api.onOverlayClick((click) => {
       hookSeenRef.current = true
@@ -560,17 +574,33 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
     }
 
     drawFrameRef.current = drawFrame
-    const handleResize = (): void => scheduleDraw()
+    const handleResize = (): void => {
+      scheduleDraw()
+      scheduleCursor()
+    }
     window.addEventListener('resize', handleResize)
+    // A display scale change does not always resize the window, so watch the pixel ratio too.
+    let ratioQuery: MediaQueryList | undefined
+    const watchRatio = (): void => {
+      ratioQuery?.removeEventListener('change', handleRatio)
+      ratioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+      ratioQuery.addEventListener('change', handleRatio)
+    }
+    function handleRatio(): void {
+      handleResize()
+      watchRatio()
+    }
+    watchRatio()
     scheduleDraw()
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      ratioQuery?.removeEventListener('change', handleRatio)
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
       frameRef.current = null
       drawFrameRef.current = () => undefined
     }
-  }, [color, interactive, revision, scheduleDraw, selectedId, stamp, tool, width])
+  }, [color, interactive, revision, scheduleCursor, scheduleDraw, selectedId, stamp, tool, width])
 
   useEffect(() => {
     if (textEditor) textInputRef.current?.focus()

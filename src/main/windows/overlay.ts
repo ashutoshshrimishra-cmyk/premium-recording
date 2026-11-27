@@ -22,7 +22,14 @@ import type {
 import { screenshotFileName } from '../screenshotName'
 import { log } from '../logger'
 import { startCursorHook, stopCursorHook } from '../cursorHook'
-import { isPointInRect, sameSample, toDisplayRelative, type CursorSample } from './cursorMath'
+import {
+  displayChangeAction,
+  isPointInRect,
+  nextCursorPollDelay,
+  sameSample,
+  toDisplayRelative,
+  type CursorSample
+} from './cursorMath'
 import { LOAD_ATTEMPTS, LOAD_TIMEOUT_MS, loadWithRetry, withTimeout } from './loadPolicy'
 import { isSenderOf } from './senderGate'
 import { panelProtectionPlan } from './platformCaps'
@@ -61,7 +68,7 @@ let interactive = true
 let panelDock: PanelDock = DEFAULT_DOCK
 let panelExpanded = false
 let panelStore: Store<PanelPrefs> | undefined
-let cursorTimer: ReturnType<typeof setInterval> | undefined
+let cursorTimer: ReturnType<typeof setTimeout> | undefined
 let lastCursor: CursorSample | undefined
 let panelSaveTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -78,34 +85,48 @@ function isAlive(win: BrowserWindow | undefined): win is BrowserWindow {
   return Boolean(win && !win.isDestroyed())
 }
 
-const CURSOR_POLL_MS = 16
-
+/** Safe to call any number of times. */
 function stopCursorFeed(): void {
-  if (cursorTimer) clearInterval(cursorTimer)
+  if (cursorTimer) clearTimeout(cursorTimer)
   cursorTimer = undefined
   lastCursor = undefined
   stopCursorHook()
 }
 
-/** Polls the pointer and pushes display relative positions to the canvas when they change. */
-function startCursorFeed(display: Display): void {
+/**
+ * Polls the pointer and pushes display relative positions to the canvas when they change. The
+ * display is read on every poll, so a display metrics change only needs to update overlayDisplay.
+ */
+function startCursorFeed(): void {
   stopCursorFeed()
-  cursorTimer = setInterval(() => {
+  let lastMoveAt = Date.now()
+  const poll = (): void => {
+    cursorTimer = undefined
     const win = canvasWindow
-    if (!isAlive(win)) return
+    const display = overlayDisplay
+    if (!isAlive(win) || !display) {
+      stopCursorFeed()
+      return
+    }
     try {
+      const now = Date.now()
       const sample = toDisplayRelative(screen.getCursorScreenPoint(), display.bounds)
-      if (sameSample(lastCursor, sample)) return
-      lastCursor = sample
-      win.webContents.send(IPC_CHANNELS.overlayCursor, sample)
+      if (!sameSample(lastCursor, sample)) {
+        lastCursor = sample
+        lastMoveAt = now
+        win.webContents.send(IPC_CHANNELS.overlayCursor, sample)
+      }
+      cursorTimer = setTimeout(poll, nextCursorPollDelay(now - lastMoveAt))
     } catch (error) {
       log('warn', 'Cursor polling failed', error)
       stopCursorFeed()
     }
-  }, CURSOR_POLL_MS)
+  }
+  cursorTimer = setTimeout(poll, nextCursorPollDelay(0))
   startCursorHook((click) => {
     const win = canvasWindow
-    if (!isAlive(win)) return
+    const display = overlayDisplay
+    if (!isAlive(win) || !display) return
     try {
       // The hook reports physical pixels on Windows.
       const dip = process.platform === 'win32' ? screen.screenToDipPoint(click) : click
@@ -226,7 +247,11 @@ async function openCanvasWindow(display: Display): Promise<void> {
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   win.on('closed', () => {
-    if (canvasWindow === win) canvasWindow = undefined
+    // An unexpected close (not closeAnnotationOverlay) must also stop the poll and the global hook.
+    if (canvasWindow !== win) return
+    canvasWindow = undefined
+    log('warn', 'The annotation canvas closed unexpectedly')
+    stopCursorFeed()
   })
   // Clicking the canvas raises it; keep the toolbar above it.
   win.on('focus', keepToolbarOnTop)
@@ -289,7 +314,15 @@ async function openToolbarWindow(display: Display): Promise<void> {
   if (plan.protect) win.setContentProtection(true)
   log(plan.logLevel, plan.message)
   win.on('closed', () => {
-    if (toolbarWindow === win) toolbarWindow = undefined
+    if (toolbarWindow !== win) return
+    toolbarWindow = undefined
+    log('warn', 'The annotation panel closed unexpectedly')
+    // Without the panel there is no way back to mouse mode, so the canvas must not block the desktop.
+    if (isAlive(canvasWindow) && interactive) {
+      interactive = false
+      canvasWindow.setIgnoreMouseEvents(true, { forward: true })
+      sendInteractiveState()
+    }
   })
   win.on('moved', savePanelPrefsSoon)
   await loadView(win, 'toolbar')
@@ -391,7 +424,8 @@ export async function openAnnotationOverlay(
     interactive = false
     canvasWindow.setIgnoreMouseEvents(true, { forward: true })
   }
-  if (isAlive(canvasWindow)) startCursorFeed(display)
+  if (isAlive(canvasWindow)) startCursorFeed()
+  watchDisplays()
   sendInteractiveState()
   const result: OverlayOpenResult = { canvas: isAlive(canvasWindow), toolbar }
   if (errors.length > 0) result.error = errors.join('; ').slice(0, 500)
@@ -499,8 +533,68 @@ export async function saveAnnotationScreenshot(): Promise<string> {
   return writeScreenshot(source.thumbnail.toPNG())
 }
 
+function keepPanelOnScreen(): void {
+  if (!isAlive(toolbarWindow)) return
+  try {
+    const current = toolbarWindow.getBounds()
+    const next = clampToDisplays(current, workAreas())
+    if (next.x !== current.x || next.y !== current.y || next.width !== current.width) {
+      toolbarWindow.setBounds(next)
+    }
+    toolbarWindow.moveTop()
+  } catch (error) {
+    log('warn', 'Could not keep the annotation panel on screen', error)
+  }
+}
+
+function onDisplayMetricsChanged(_event: unknown, display: Display): void {
+  if (displayChangeAction(overlayDisplay?.id, display.id, 'metrics') === 'resize') {
+    log('info', `Recorded display ${display.id} changed, resizing the annotation canvas`)
+    overlayDisplay = display
+    lastCursor = undefined
+    if (isAlive(canvasWindow)) canvasWindow.setBounds(display.bounds)
+  }
+  keepPanelOnScreen()
+}
+
+function onDisplayRemoved(_event: unknown, display: Display): void {
+  if (displayChangeAction(overlayDisplay?.id, display.id, 'removed') === 'close-canvas') {
+    log('warn', `Recorded display ${display.id} was removed, closing the annotation canvas`)
+    stopCursorFeed()
+    const canvas = canvasWindow
+    canvasWindow = undefined
+    if (isAlive(canvas)) canvas.destroy()
+    overlayDisplay = undefined
+    // The capture ends with the display; bring the main window back so the result is visible.
+    const owner = recordingOwner && !recordingOwner.isDestroyed() ? recordingOwner : undefined
+    const ownerWindow = owner ? BrowserWindow.fromWebContents(owner) : null
+    if (ownerWindow && !ownerWindow.isDestroyed() && ownerWindow.isMinimized()) {
+      ownerWindow.restore()
+    }
+  }
+  keepPanelOnScreen()
+}
+
+let watchingDisplays = false
+
+function watchDisplays(): void {
+  if (watchingDisplays) return
+  watchingDisplays = true
+  screen.on('display-metrics-changed', onDisplayMetricsChanged)
+  screen.on('display-removed', onDisplayRemoved)
+}
+
+function unwatchDisplays(): void {
+  if (!watchingDisplays) return
+  watchingDisplays = false
+  screen.removeListener('display-metrics-changed', onDisplayMetricsChanged)
+  screen.removeListener('display-removed', onDisplayRemoved)
+}
+
+/** Safe to call any number of times. */
 export function closeAnnotationOverlay(): void {
   stopCursorFeed()
+  unwatchDisplays()
   const windows = [canvasWindow, toolbarWindow]
   if (panelSaveTimer && isAlive(toolbarWindow)) {
     // Persist a pending position before the window goes away.
