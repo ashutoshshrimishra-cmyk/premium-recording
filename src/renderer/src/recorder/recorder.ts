@@ -28,6 +28,7 @@ import {
 import { PROBE_BYTE_LIMIT, probeSlice } from './probeBytes'
 import { sourceKindOf } from '../../../shared/sourceId'
 import { detectAudioTrack } from '../../../shared/containerProbe'
+import { formatBytes } from '../../../shared/recentRecordings'
 import { createEmptyDiagnostics, type RecordingDiagnostics } from './diagnostics'
 
 export interface RecorderCallbacks {
@@ -80,6 +81,7 @@ export class ScreenRecorder {
   private chunkWriter?: RecordingChunkWriter
   private sessionId?: string
   private removeStopListener?: () => void
+  private removeDiskListener?: () => void
   private microphone?: MicrophoneChain
   private diagnostics: RecordingDiagnostics = createEmptyDiagnostics({
     version: __APP_VERSION__,
@@ -292,6 +294,17 @@ export class ScreenRecorder {
     this.mediaRecorder = recorder
     this.callbacks.onMimeType(mimeType)
     this.removeStopListener = window.api.onRecordingStopRequested(() => void this.stop())
+    this.removeDiskListener = window.api.onRecordingDiskSpace((status) => {
+      if (this.stopped) return
+      const free = formatBytes(status.availableBytes)
+      if (status.level === 'low') {
+        this.warn(`Low disk space: ${free} left on the save drive. Free up space or stop soon.`)
+        return
+      }
+      // A warning, not an error message: the "Saved" message that follows must not replace it.
+      this.warn(`Disk almost full: only ${free} left, so the recording was stopped and saved.`)
+      void this.stop()
+    })
 
     try {
       const started = await window.api.recordingStart({
@@ -333,7 +346,7 @@ export class ScreenRecorder {
       videoTrack.onended = (): void => {
         if (!this.stopped) {
           this.log(`Video track ended (${this.captureKind})`)
-          this.callbacks.onError(captureEndedMessage(this.captureKind))
+          this.warn(captureEndedMessage(this.captureKind))
           void this.stop()
         }
       }
@@ -627,6 +640,8 @@ export class ScreenRecorder {
     this.denoiseActive = true
     this.removeStopListener?.()
     this.removeStopListener = undefined
+    this.removeDiskListener?.()
+    this.removeDiskListener = undefined
     if (this.finishFallback) clearTimeout(this.finishFallback)
     this.finishFallback = undefined
     if (this.measurementVideo) {
@@ -725,7 +740,7 @@ export class ScreenRecorder {
       sourceTrack.onended = (): void => {
         if (!this.stopped) {
           this.log(`Region source track ended (${this.captureKind})`)
-          this.callbacks.onError(captureEndedMessage(this.captureKind))
+          this.warn(captureEndedMessage(this.captureKind))
           void this.stop()
         }
       }

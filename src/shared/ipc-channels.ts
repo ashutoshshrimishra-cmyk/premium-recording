@@ -9,6 +9,7 @@ export const IPC_CHANNELS = {
   recordingChunk: 'recording-chunk',
   recordingStop: 'recording-stop',
   recordingStopRequested: 'recording-stop-requested',
+  recordingDiskSpace: 'recording-disk-space',
   overlaySetInteractive: 'overlay-set-interactive',
   overlayInteractiveChanged: 'overlay-interactive-changed',
   overlayRequestStop: 'overlay-request-stop',

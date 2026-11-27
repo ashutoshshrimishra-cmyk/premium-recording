@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { release } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import Store from 'electron-store'
 import { is } from '@electron-toolkit/utils'
 import { isTopLevelFrame, isTrustedRendererUrl, type TrustedRenderer } from './trustedSender'
@@ -63,7 +63,6 @@ import {
   diagnosticsShowLogOutputSchema,
   diagnosticsProbeFileInputSchema,
   diagnosticsProbeFileOutputSchema,
-  settingsSchema,
   shortcutsGetInputSchema,
   shortcutsSetInputSchema,
   shortcutsResultSchema,
@@ -85,6 +84,7 @@ import {
   type ShortcutsConfig
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import { SETTINGS_VERSION, migrateSettings } from '../../shared/settingsMigration'
 import { detectAudioTrack } from '../../shared/containerProbe'
 import { addRecent, pruneMissing, sanitizeRecent } from '../../shared/recentRecordings'
 import {
@@ -108,6 +108,7 @@ import {
   stopRecordingFile
 } from '../recording'
 import { toStopFailure } from '../recordingErrors'
+import { startDiskMonitor } from '../diskMonitor'
 import {
   isStartupCancelled,
   once,
@@ -197,7 +198,10 @@ function validateSender(event: IpcMainInvokeEvent): void {
 
 export function registerIpc(): void {
   const settingsDefaults = getSettingsDefaults()
-  const store = new Store<Settings>({ name: 'settings', defaults: settingsDefaults })
+  const store = new Store<Settings & { settingsVersion?: number }>({
+    name: 'settings',
+    defaults: settingsDefaults
+  })
   let activeSession: ActiveRecordingSession | undefined
 
   ipcMain.handle(IPC_CHANNELS.getSources, async (event, input: unknown) => {
@@ -279,27 +283,21 @@ export function registerIpc(): void {
     return pickFolderOutputSchema.parse(folder)
   })
 
-  const readSettings = (): Settings => {
-    const saved = store.get('saveDir', settingsDefaults.saveDir)
-    const raw = {
-      saveDir: isAbsolute(saved) ? saved : settingsDefaults.saveDir,
-      fps: store.get('fps', settingsDefaults.fps),
-      resolution: store.get('resolution', settingsDefaults.resolution),
-      noiseSuppression: store.get('noiseSuppression', settingsDefaults.noiseSuppression),
-      audioDeviceId: store.get('audioDeviceId', 'default') || 'default',
-      countdownSeconds: store.get('countdownSeconds', settingsDefaults.countdownSeconds),
-      openFolderAfterSave: store.get('openFolderAfterSave', settingsDefaults.openFolderAfterSave),
-      cursorEffect: store.get('cursorEffect', settingsDefaults.cursorEffect),
-      annotationStartsActive: store.get(
-        'annotationStartsActive',
-        settingsDefaults.annotationStartsActive
-      ),
-      shortcuts: store.get('shortcuts', settingsDefaults.shortcuts)
+  // Settings are read field by field: one bad value resets only that field (see settingsMigration).
+  const readSettings = (): Settings => migrateSettings(store.store, settingsDefaults).settings
+
+  {
+    const migration = migrateSettings(store.store, settingsDefaults)
+    if (migration.reset.length > 0) {
+      log(
+        'warn',
+        `Stored settings had invalid values, reset to defaults: ${migration.reset.join(', ')}`
+      )
     }
-    const parsed = settingsSchema.safeParse(raw)
-    if (parsed.success) return parsed.data
-    log('warn', 'Stored settings are invalid, using defaults', parsed.error)
-    return settingsDefaults
+    if (migration.shouldWrite) {
+      store.set({ ...migration.settings, settingsVersion: SETTINGS_VERSION })
+      log('info', `Settings migrated from version ${migration.fromVersion} to ${SETTINGS_VERSION}`)
+    }
   }
 
   const shortcutsResult = (shortcuts: ShortcutsConfig, failed: ShortcutFailure[]): unknown => ({
@@ -621,6 +619,13 @@ export function registerIpc(): void {
       ensureActive()
 
       session.phase = 'recording'
+      const tempPath = session.tempPath
+      if (tempPath) {
+        session.stopMonitors = startDiskMonitor(dirname(tempPath), (status) => {
+          log('warn', `Disk space ${status.level}: ${status.availableBytes} bytes free`)
+          if (!owner.isDestroyed()) owner.send(IPC_CHANNELS.recordingDiskSpace, status)
+        })
+      }
       return recordingStartOutputSchema.parse({ filePath, sessionId: session.id, overlay })
     } catch (error) {
       // No data has been written yet, so the empty file is discarded.

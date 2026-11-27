@@ -183,6 +183,13 @@ export const recordingStopOutputSchema = z.discriminatedUnion('ok', [
   })
 ])
 
+/** Free space warning pushed to the recording window during a recording. */
+export const recordingDiskSpaceSchema = z.object({
+  level: z.enum(['low', 'critical']),
+  availableBytes: z.number().nonnegative()
+})
+export type RecordingDiskSpace = z.infer<typeof recordingDiskSpaceSchema>
+
 export const overlaySetInteractiveInputSchema = z.object({ interactive: z.boolean() })
 export const overlaySetInteractiveOutputSchema = z.boolean()
 export const overlayRequestStopInputSchema = z.void()

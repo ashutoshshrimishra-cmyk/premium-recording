@@ -12,6 +12,7 @@ import type {
   RecordingChunkOutput,
   RecordingStopInput,
   RecordingStopOutput,
+  RecordingDiskSpace,
   OverlaySetInteractiveInput,
   OverlaySetInteractiveOutput,
   OverlayRequestStopOutput,
@@ -44,6 +45,7 @@ interface RecorderApi {
   recordingChunk(input: RecordingChunkInput): Promise<RecordingChunkOutput>
   recordingStop(input: RecordingStopInput): Promise<RecordingStopOutput>
   onRecordingStopRequested(callback: () => void): () => void
+  onRecordingDiskSpace(callback: (status: RecordingDiskSpace) => void): () => void
   overlaySetInteractive(input: OverlaySetInteractiveInput): Promise<OverlaySetInteractiveOutput>
   overlayRequestStop(): Promise<OverlayRequestStopOutput>
   overlaySendCommand(command: OverlayCommand): Promise<boolean>

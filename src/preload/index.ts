@@ -14,6 +14,7 @@ import type {
   RecordingChunkOutput,
   RecordingStopInput,
   RecordingStopOutput,
+  RecordingDiskSpace,
   OverlaySetInteractiveInput,
   OverlaySetInteractiveOutput,
   OverlayRequestStopOutput,
@@ -57,6 +58,12 @@ const api = {
     const listener = (): void => callback()
     ipcRenderer.on(IPC_CHANNELS.recordingStopRequested, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.recordingStopRequested, listener)
+  },
+  onRecordingDiskSpace: (callback: (status: RecordingDiskSpace) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: RecordingDiskSpace): void =>
+      callback(status)
+    ipcRenderer.on(IPC_CHANNELS.recordingDiskSpace, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.recordingDiskSpace, listener)
   },
   overlaySetInteractive: (
     input: OverlaySetInteractiveInput
