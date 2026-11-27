@@ -16,6 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
       - run: npx electron-vite build
       - run: npx electron-builder --win --publish never
@@ -23,3 +24,24 @@ jobs:
         with:
           name: windows-installer
           path: dist/*.exe
+      - name: Smoke test installer
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          $installer = (Get-ChildItem dist -Filter '*-setup.exe' | Select-Object -First 1).FullName
+          if (-not $installer) { throw 'Installer not found in dist' }
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw 'Installer timed out' }
+          $programs = Join-Path $env:LOCALAPPDATA 'Programs'
+          $exe = Get-ChildItem $programs -Recurse -Filter 'premium-recording.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'Installed premium-recording.exe not found' }
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 10
+          $running = Get-Process -Id $app.Id -ErrorAction SilentlyContinue
+          if (-not $running) { throw 'App exited within 10 seconds of launch' }
+          Stop-Process -Id $app.Id -Force
+          $uninstaller = Get-ChildItem $exe.DirectoryName -Filter 'Uninstall*.exe' | Select-Object -First 1
+          if ($uninstaller) {
+            $u = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -PassThru
+            if (-not $u.WaitForExit(120000)) { $u.Kill(); throw 'Uninstaller timed out' }
+          }
