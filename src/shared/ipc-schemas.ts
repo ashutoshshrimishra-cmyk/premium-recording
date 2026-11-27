@@ -158,7 +158,19 @@ export const recordingStopInputSchema = z.object({
   mimeType: z.string().min(1),
   discard: z.boolean().optional()
 })
-export const recordingStopOutputSchema = z.object({ filePath: z.string().min(1) })
+/**
+ * Stop never throws for file problems. A failure carries a code and, when the partial data was
+ * kept, the .part path so the UI can point to recovery.
+ */
+export const recordingStopOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), filePath: z.string().min(1) }),
+  z.object({
+    ok: z.literal(false),
+    code: z.enum(['cancelled', 'empty', 'save-failed', 'error']),
+    message: z.string().max(2000),
+    preservedPath: z.string().min(1).optional()
+  })
+])
 
 export const overlaySetInteractiveInputSchema = z.object({ interactive: z.boolean() })
 export const overlaySetInteractiveOutputSchema = z.boolean()

@@ -12,6 +12,11 @@ export interface MicrophoneLevels {
 export interface MicrophoneChain {
   /** The track to record. Processed when `denoised` is true, otherwise the raw microphone track. */
   track: MediaStreamTrack
+  /**
+   * The device track. With noise removal `track` comes from an audio graph and never ends, so a
+   * disconnected microphone is only visible as `ended` on this track.
+   */
+  sourceTrack: MediaStreamTrack
   denoised: boolean
   deviceLabel: string
   /** Set when AI noise removal was requested but could not be used. */
@@ -79,6 +84,7 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
     const monitor = createLevelMonitor({ now: Date.now, failsafe: false })
     const chain: MicrophoneChain = {
       track: rawTrack,
+      sourceTrack: rawTrack,
       denoised: false,
       deviceLabel,
       warning,
@@ -196,6 +202,7 @@ export async function openMicrophone(options: MicrophoneOptions): Promise<Microp
     }
     const chain: MicrophoneChain = {
       track: processed,
+      sourceTrack: rawTrack,
       denoised: true,
       deviceLabel,
       contextState: ctx.state,

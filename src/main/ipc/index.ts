@@ -6,7 +6,8 @@ import {
   ipcMain,
   screen,
   shell,
-  type IpcMainInvokeEvent
+  type IpcMainInvokeEvent,
+  type WebContents
 } from 'electron'
 import { displayLabel, matchDisplay, sortDisplays, sourceKindOf } from '../../shared/sourceId'
 import { captureExclusionMode, parseWindowsBuild } from '../windows/platformCaps'
@@ -96,6 +97,7 @@ import { getLogPath, log } from '../logger'
 import { BUILD_COMMIT } from '../buildInfo'
 import {
   appendRecordingChunk,
+  closeActiveRecordingKeepingPart,
   discardActiveRecording,
   getActiveTempPath,
   getLastSavedRecordingPath,
@@ -103,6 +105,14 @@ import {
   startRecordingFile,
   stopRecordingFile
 } from '../recording'
+import { toStopFailure } from '../recordingErrors'
+import {
+  isStartupCancelled,
+  once,
+  ownerLossTeardown,
+  type FileTeardown,
+  type SessionPhase
+} from './sessionState'
 import { deletePart, isRecoverablePartPath, listAbandonedParts, recoverPart } from '../recovery'
 import {
   closeAnnotationOverlay,
@@ -118,6 +128,7 @@ import {
   isAnnotationOverlaySender,
   isAnnotationToolbarSender,
   openAnnotationOverlay,
+  type OverlayOpenResult,
   requestRecordingStop,
   saveAnnotationScreenshot,
   setAnnotationInteractive
@@ -126,8 +137,15 @@ import {
 interface ActiveRecordingSession {
   id: string
   ownerId: number
-  detachLifecycle: () => void
-  discardPromise?: Promise<void>
+  phase: SessionPhase
+  /** Set by the first teardown request. Startup checks it after every await. */
+  tornDown: boolean
+  /** The .part created for this session, once the file is open. */
+  tempPath?: string
+  /** Stops per-session timers such as the disk space monitor. */
+  stopMonitors?: () => void
+  /** The single teardown for this session. The first call decides what happens to the file. */
+  end: (mode: FileTeardown) => Promise<void>
 }
 
 function getSettingsDefaults(): Settings {
@@ -432,10 +450,85 @@ export function registerIpc(): void {
     return recoveryDiscardOutputSchema.parse(true)
   })
 
-  ipcMain.handle(IPC_CHANNELS.recordingSelectSource, (event, input: unknown) => {
+  const SOURCE_GONE_MESSAGE =
+    'The selected screen or window is no longer available. Refresh the list and select it again.'
+
+  const findCaptureSource = async (sourceId: string): Promise<Electron.DesktopCapturerSource> => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false
+    })
+    const source = sources.find((candidate) => candidate.id === sourceId)
+    if (!source) throw new Error(SOURCE_GONE_MESSAGE)
+    return source
+  }
+
+  /**
+   * Creates the session record and its single teardown. Every exit path (stop, failed startup,
+   * owner window closed or crashed) goes through `session.end`, which runs once.
+   */
+  const createSession = (owner: WebContents): ActiveRecordingSession => {
+    let fileTeardown: FileTeardown = 'none'
+    const session: ActiveRecordingSession = {
+      id: randomUUID(),
+      ownerId: owner.id,
+      phase: 'starting',
+      tornDown: false,
+      end: () => Promise.resolve()
+    }
+    const onOwnerLoss = (): void => {
+      if (session.tornDown) return
+      log('warn', `Recording window went away during phase '${session.phase}'`)
+      void session.end(ownerLossTeardown(session.phase))
+    }
+    const run = once(
+      async () => {
+        owner.removeListener('destroyed', onOwnerLoss)
+        owner.removeListener('render-process-gone', onOwnerLoss)
+        session.stopMonitors?.()
+        closeAnnotationOverlay()
+        setSelectedSourceId('')
+        if (!session.tempPath) return
+        if (fileTeardown === 'discard') await discardActiveRecording(session.tempPath)
+        else if (fileTeardown === 'keep') await closeActiveRecordingKeepingPart(session.tempPath)
+      },
+      (error) => log('error', 'Recording teardown failed', error)
+    )
+    session.end = async (mode: FileTeardown): Promise<void> => {
+      if (!session.tornDown) {
+        session.tornDown = true
+        fileTeardown = mode
+      }
+      await run()
+      if (activeSession === session) activeSession = undefined
+    }
+    owner.on('destroyed', onOwnerLoss)
+    owner.on('render-process-gone', onOwnerLoss)
+    return session
+  }
+
+  const sessionFor = (event: IpcMainInvokeEvent, sessionId: string): ActiveRecordingSession => {
+    const session = activeSession
+    if (
+      !session ||
+      session.tornDown ||
+      session.id !== sessionId ||
+      session.ownerId !== event.sender.id
+    ) {
+      throw new Error('Recording session is not valid')
+    }
+    return session
+  }
+
+  ipcMain.handle(IPC_CHANNELS.recordingSelectSource, async (event, input: unknown) => {
     validateSender(event)
     if (activeSession) throw new Error('A recording is already in progress')
     const { sourceId } = recordingSelectSourceInputSchema.parse(input)
+    // Checked here so a closed window or unplugged screen gives a clear error instead of a
+    // generic capture refusal from getDisplayMedia.
+    await findCaptureSource(sourceId)
+    if (activeSession) throw new Error('A recording is already in progress')
     setSelectedSourceId(sourceId)
     return recordingSelectSourceOutputSchema.parse(true)
   })
@@ -444,60 +537,43 @@ export function registerIpc(): void {
     validateSender(event)
     if (activeSession) throw new Error('A recording is already in progress')
     const recording = recordingStartInputSchema.parse(input)
-    const sessionId = randomUUID()
     const owner = event.sender
     const win = BrowserWindow.fromWebContents(owner)
-    const cleanupOnOwnerLoss = (): void => {
-      if (activeSession?.id !== sessionId) return
-      closeAnnotationOverlay()
-      activeSession.discardPromise ??= discardActiveRecording()
-      void activeSession.discardPromise.finally(() => {
-        if (activeSession?.id === sessionId) {
-          activeSession.detachLifecycle()
-          activeSession = undefined
-        }
-      })
+    const session = createSession(owner)
+    activeSession = session
+    const ensureActive = (): void => {
+      if (isStartupCancelled(activeSession, session.id)) {
+        throw new Error('Recording startup was cancelled')
+      }
     }
-    const detachLifecycle = (): void => {
-      owner.removeListener('destroyed', cleanupOnOwnerLoss)
-      owner.removeListener('render-process-gone', cleanupOnOwnerLoss)
-    }
-    const sessionRecord: ActiveRecordingSession = {
-      id: sessionId,
-      ownerId: owner.id,
-      detachLifecycle
-    }
-    activeSession = sessionRecord
-    owner.once('destroyed', cleanupOnOwnerLoss)
-    owner.once('render-process-gone', cleanupOnOwnerLoss)
 
-    let fileStarted = false
     try {
-      const sources = await desktopCapturer.getSources({
-        types: ['screen', 'window'],
-        thumbnailSize: { width: 1, height: 1 },
-        fetchWindowIcons: false
-      })
-      if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
-      const source = sources.find((candidate) => candidate.id === recording.sourceId)
-      if (!source)
-        throw new Error(
-          'The selected screen or window is no longer available. Refresh the list and select it again.'
-        )
+      const source = await findCaptureSource(recording.sourceId)
+      ensureActive()
+      const saveDir = recording.saveDir
 
-      const filePath = await startRecordingFile(recording.saveDir, new Date(), recording.mimeType)
-      fileStarted = true
-      if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
+      const filePath = await startRecordingFile(saveDir, new Date(), recording.mimeType)
+      session.tempPath = getActiveTempPath()
+      ensureActive()
 
       // Open the annotation windows first so the main window only hides when the panel is usable.
-      const overlay = await openAnnotationOverlay(
-        source.display_id,
-        source.id,
-        owner,
-        recording.saveDir,
-        sourceKindOf(source.id) !== 'window'
-      )
-      if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
+      // A failure here never blocks the recording, it is reported as a warning.
+      let overlay: OverlayOpenResult
+      try {
+        overlay = await openAnnotationOverlay(
+          source.display_id,
+          source.id,
+          owner,
+          saveDir,
+          sourceKindOf(source.id) !== 'window'
+        )
+      } catch (error) {
+        log('error', 'Opening the annotation overlay failed', error)
+        closeAnnotationOverlay()
+        const reason = error instanceof Error ? error.message : String(error)
+        overlay = { canvas: false, toolbar: false, error: reason.slice(0, 500) }
+      }
+      ensureActive()
       if (overlay.canvas && !readSettings().annotationStartsActive) {
         try {
           setAnnotationInteractive(false)
@@ -519,19 +595,18 @@ export function registerIpc(): void {
         if (win && !win.isDestroyed() && win.isMinimized()) win.restore()
       }
       await sleep(200)
-      if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
+      ensureActive()
 
-      return recordingStartOutputSchema.parse({ filePath, sessionId, overlay })
+      session.phase = 'recording'
+      return recordingStartOutputSchema.parse({ filePath, sessionId: session.id, overlay })
     } catch (error) {
-      if (activeSession?.id === sessionId) {
-        closeAnnotationOverlay()
-        if (fileStarted) {
-          activeSession.discardPromise ??= discardActiveRecording()
-          await activeSession.discardPromise
-        }
-        activeSession.detachLifecycle()
-        activeSession = undefined
-      }
+      // No data has been written yet, so the empty file is discarded.
+      const ownsGlobals = !activeSession || activeSession === session
+      await session.end('discard')
+      // The teardown may have run (owner loss) before the file existed. Clean up what startup
+      // created after that. The path check keeps this from touching any other recording.
+      if (session.tempPath) await discardActiveRecording(session.tempPath)
+      if (ownsGlobals) closeAnnotationOverlay()
       if (win && !win.isDestroyed() && win.isMinimized()) win.restore()
       throw error
     }
@@ -540,37 +615,28 @@ export function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.recordingChunk, async (event, input: unknown) => {
     validateSender(event)
     const chunk = recordingChunkInputSchema.parse(input)
-    if (
-      !activeSession ||
-      activeSession.id !== chunk.sessionId ||
-      activeSession.ownerId !== event.sender.id
-    ) {
-      throw new Error('Recording session is not valid')
-    }
+    sessionFor(event, chunk.sessionId)
     return recordingChunkOutputSchema.parse(await appendRecordingChunk(chunk.data))
   })
 
   ipcMain.handle(IPC_CHANNELS.recordingStop, async (event, input: unknown) => {
     validateSender(event)
     const stop = recordingStopInputSchema.parse(input)
-    if (
-      !activeSession ||
-      activeSession.id !== stop.sessionId ||
-      activeSession.ownerId !== event.sender.id
-    ) {
-      throw new Error('Recording session is not valid')
-    }
-    const session = activeSession
+    const session = sessionFor(event, stop.sessionId)
+    // Stopping owns the file from here, an owner loss must not close it a second time.
+    session.phase = 'stopping'
     const win = BrowserWindow.fromWebContents(event.sender)
     try {
       const filePath = await stopRecordingFile(stop.mimeType, stop.discard === true)
-      return recordingStopOutputSchema.parse({ filePath })
+      return recordingStopOutputSchema.parse({ ok: true, filePath })
+    } catch (error) {
+      // Returned instead of thrown so the kept path and the error code reach the renderer.
+      const failure = toStopFailure(error)
+      if (failure.code !== 'cancelled') log('error', 'Stopping the recording failed', error)
+      return recordingStopOutputSchema.parse(failure)
     } finally {
-      session.detachLifecycle()
-      if (activeSession?.id === session.id) activeSession = undefined
-      setSelectedSourceId('')
-      closeAnnotationOverlay()
-      if (win && win.isMinimized()) {
+      await session.end('none')
+      if (win && !win.isDestroyed() && win.isMinimized()) {
         win.restore()
         win.focus()
       }

@@ -6,6 +6,7 @@ import { formatDiagnostics, type RecordingDiagnostics } from '../recorder/diagno
 import { runCountdown } from '../recorder/countdown'
 import { showShortcut } from './platform'
 import { RecordingCancelledError, type MicChoice, type MicFailure } from '../recorder/micFallback'
+import { ipcErrorMessage } from '../recorder/ipcError'
 
 type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -144,16 +145,19 @@ export const StartButton = memo(function StartButton() {
             setMicPrompt(failure)
           })
       })
-      timerRef.current = setInterval(updateElapsed, 250)
+      // Stop may have been pressed while starting; then the recorder is already gone.
+      if (recorderRef.current === recorder) {
+        timerRef.current = setInterval(updateElapsed, 250)
+      }
       startingRef.current = false
     } catch (error) {
       startingRef.current = false
       answerMic('cancel')
-      recorderRef.current = undefined
+      if (recorderRef.current === recorder) recorderRef.current = undefined
       statusRef.current = 'idle'
       setStatus('idle')
       if (error instanceof RecordingCancelledError) return
-      setMessage(error instanceof Error ? error.message : 'Recording could not start')
+      setMessage(ipcErrorMessage(error, 'Recording could not start'))
     }
   }
 
@@ -191,7 +195,14 @@ export const StartButton = memo(function StartButton() {
 
   const stop = (): void => {
     answerMic('cancel')
-    void recorderRef.current?.stop()
+    recorderRef.current?.stop().catch((error: unknown) => {
+      setMessage(`Stopping failed: ${ipcErrorMessage(error)}`)
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = undefined
+      recorderRef.current = undefined
+      statusRef.current = 'idle'
+      setStatus('idle')
+    })
   }
   const pause = (): void => recorderRef.current?.pause()
   const resume = (): void => recorderRef.current?.resume()

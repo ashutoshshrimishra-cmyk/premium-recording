@@ -3,6 +3,7 @@ import { FolderOpen, RotateCcw, Trash2 } from 'lucide-react'
 import { useRecorderStore } from './store'
 import { formatBytes } from '../../../shared/recentRecordings'
 import type { AbandonedPart } from '../../../shared/ipc-schemas'
+import { ipcErrorMessage } from '../recorder/ipcError'
 
 const fileName = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? filePath
 
@@ -28,7 +29,7 @@ export const RecoveryBanner = memo(function RecoveryBanner() {
     try {
       setMessage(await action())
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'The action failed')
+      setMessage(ipcErrorMessage(error))
     }
     await refresh()
   }
@@ -75,7 +76,11 @@ export const RecoveryBanner = memo(function RecoveryBanner() {
               type="button"
               title="Show in folder"
               aria-label={`Show ${fileName(part.partPath)} in folder`}
-              onClick={() => void window.api.recoveryShow(part.partPath).catch(() => undefined)}
+              onClick={() =>
+                void window.api
+                  .recoveryShow(part.partPath)
+                  .catch((error: unknown) => setMessage(ipcErrorMessage(error)))
+              }
               className="rounded border border-[var(--border)] p-1.5"
             >
               <FolderOpen className="size-3.5" aria-hidden="true" />

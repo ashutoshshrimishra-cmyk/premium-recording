@@ -7,7 +7,11 @@ import { getLogPath, log } from './logger'
 import { BUILD_COMMIT, BUILD_TIME } from './buildInfo'
 import { release } from 'node:os'
 import { captureExclusionMode, describeCaptureMode } from './windows/platformCaps'
-import { discardActiveRecording, getSelectedSourceId, setSelectedSourceId } from './recording'
+import {
+  closeActiveRecordingKeepingPart,
+  getSelectedSourceId,
+  setSelectedSourceId
+} from './recording'
 import { closeAnnotationOverlay } from './windows/overlay'
 import { setShortcutTarget, unregisterShortcuts } from './shortcuts/shortcutManager'
 
@@ -139,7 +143,8 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   unregisterShortcuts()
   closeAnnotationOverlay()
-  void discardActiveRecording().finally(() => {
+  // Quitting mid-recording keeps the .part, so the next start offers to recover it.
+  void closeActiveRecordingKeepingPart().finally(() => {
     finishingQuit = true
     app.quit()
   })

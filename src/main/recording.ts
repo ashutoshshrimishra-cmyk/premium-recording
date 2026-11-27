@@ -1,6 +1,12 @@
 import { access, copyFile, link, mkdir, open, stat, statfs, unlink } from 'node:fs/promises'
 import { constants, type WriteStream } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
+import { RECORDING_CANCELLED, RECORDING_EMPTY, describeWriteError } from './recordingErrors'
+
+/** Upper bound for unique name attempts (`name_2` ... `name_100`). */
+export const MAX_NAME_ATTEMPTS = 100
+/** How long stopping waits for the file to close before it gives up and keeps the .part. */
+export const STREAM_CLOSE_TIMEOUT_MS = 10_000
 
 let selectedSourceId = ''
 let activeStream: WriteStream | undefined
@@ -63,7 +69,7 @@ async function openUniqueRecording(
   const extension = extname(filename)
   const stem = basename(filename, extension)
 
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_NAME_ATTEMPTS; attempt += 1) {
     const suffix = attempt === 0 ? '' : `_${attempt + 1}`
     const finalPath = join(directory, `${stem}${suffix}${extension}`)
     const tempPath = `${finalPath}.part`
@@ -110,7 +116,10 @@ export async function startRecordingFile(
 
 export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Promise<boolean> {
   const stream = activeStream
-  if (!stream || stream.destroyed || stream.closed || streamError) return Promise.resolve(false)
+  if (streamError) return Promise.reject(new Error(describeWriteError(streamError)))
+  if (!stream || stream.destroyed || stream.closed) {
+    return Promise.reject(new Error('Write failed: the recording file is no longer open'))
+  }
   if (chunk.byteLength === 0) return Promise.resolve(true)
   if (chunk.byteLength > 16 * 1024 * 1024) {
     return Promise.reject(new Error('Recording chunk exceeds 16 MB'))
@@ -123,11 +132,11 @@ export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Prom
     stream.write(data, (error) => {
       if (error) {
         streamError = error
-        rejectChunk(error)
+        rejectChunk(new Error(describeWriteError(error)))
         return
       }
       if (streamError) {
-        rejectChunk(streamError)
+        rejectChunk(new Error(describeWriteError(streamError)))
         return
       }
       resolveChunk(true)
@@ -135,7 +144,14 @@ export function appendRecordingChunk(chunk: ArrayBuffer | ArrayBufferView): Prom
   })
 }
 
-async function closeStream(stream: WriteStream): Promise<void> {
+/**
+ * Ends the stream and waits for it to close. A stuck disk or handle can keep `close` from ever
+ * firing, so after `timeoutMs` the stream is destroyed and the wait fails instead of hanging.
+ */
+export async function closeStream(
+  stream: WriteStream,
+  timeoutMs = STREAM_CLOSE_TIMEOUT_MS
+): Promise<void> {
   if (stream.closed) return
   await new Promise<void>((resolveClosed, reject) => {
     const onClose = (): void => {
@@ -146,7 +162,13 @@ async function closeStream(stream: WriteStream): Promise<void> {
       cleanup()
       reject(error)
     }
+    const timer = setTimeout(() => {
+      cleanup()
+      stream.destroy()
+      reject(new Error(`The recording file did not close within ${Math.round(timeoutMs / 1000)} s`))
+    }, timeoutMs)
     const cleanup = (): void => {
+      clearTimeout(timer)
       stream.removeListener('close', onClose)
       stream.removeListener('error', onError)
     }
@@ -169,7 +191,7 @@ export async function finalizeWithoutOverwrite(
 ): Promise<string> {
   const extension = extname(desiredPath)
   const stem = desiredPath.slice(0, -extension.length)
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_NAME_ATTEMPTS; attempt += 1) {
     const finalPath = attempt === 0 ? desiredPath : `${stem}_${attempt + 1}${extension}`
     try {
       await link(tempPath, finalPath)
@@ -198,7 +220,15 @@ export async function finalizeWithoutOverwrite(
 export class RecordingSaveError extends Error {
   readonly preservedPath: string
   constructor(cause: unknown, preservedPath: string) {
-    const reason = cause instanceof Error ? cause.message : String(cause)
+    const hasErrno =
+      typeof cause === 'object' &&
+      cause !== null &&
+      typeof (cause as { code?: unknown }).code === 'string'
+    const reason = hasErrno
+      ? describeWriteError(cause)
+      : cause instanceof Error
+        ? cause.message
+        : String(cause)
     super(`${reason}. The partial recording was kept at ${preservedPath}`)
     this.name = 'RecordingSaveError'
     this.preservedPath = preservedPath
@@ -220,14 +250,17 @@ export async function stopRecordingFile(mimeType: string, discard = false): Prom
 
     if (discard) {
       await unlink(tempPath).catch(() => undefined)
-      throw new Error('Recording was cancelled')
+      throw Object.assign(new Error('Recording was cancelled'), { code: RECORDING_CANCELLED })
     }
 
     const { size } = await stat(tempPath)
     if (size === 0) {
       await unlink(tempPath).catch(() => undefined)
-      throw new Error(
-        'Recording produced no data (0 bytes). The screen capture did not deliver any video.'
+      throw Object.assign(
+        new Error(
+          'Recording produced no data (0 bytes). The screen capture did not deliver any video.'
+        ),
+        { code: RECORDING_EMPTY }
       )
     }
 
@@ -241,22 +274,47 @@ export async function stopRecordingFile(mimeType: string, discard = false): Prom
       () => true,
       () => false
     )
-    if (!kept || (error as Error).message.startsWith('Recording produced no data')) throw error
+    if (!kept || (error as { code?: unknown }).code === RECORDING_EMPTY) throw error
     throw new RecordingSaveError(error, tempPath)
   } finally {
     clearActiveRecording()
   }
 }
 
-export async function discardActiveRecording(): Promise<void> {
-  const stream = activeStream
-  const tempPath = activeTempPath
-  if (!stream || !tempPath) return
-  try {
-    await closeStream(stream).catch(() => undefined)
-    await unlink(tempPath).catch(() => undefined)
-  } finally {
-    clearActiveRecording()
-    setSelectedSourceId('')
-  }
+/** True when there is an open recording and, if given, it is the one at `expectedTempPath`. */
+function isActiveRecording(expectedTempPath?: string): boolean {
+  if (!activeStream || !activeTempPath) return false
+  return expectedTempPath === undefined || expectedTempPath === activeTempPath
+}
+
+/**
+ * Closes and deletes the open recording. Used when startup fails before any data was written.
+ * With `expectedTempPath` it only acts on that file, so a late call can never touch a newer recording.
+ */
+export async function discardActiveRecording(expectedTempPath?: string): Promise<void> {
+  if (!isActiveRecording(expectedTempPath)) return
+  const stream = activeStream as WriteStream
+  const tempPath = activeTempPath as string
+  clearActiveRecording()
+  setSelectedSourceId('')
+  await closeStream(stream).catch(() => undefined)
+  await unlink(tempPath).catch(() => undefined)
+}
+
+/**
+ * Closes the open recording but keeps the .part so it shows up for recovery, for example when the
+ * recording window crashed or the app quits mid-recording. An empty .part is removed.
+ */
+export async function closeActiveRecordingKeepingPart(expectedTempPath?: string): Promise<void> {
+  if (!isActiveRecording(expectedTempPath)) return
+  const stream = activeStream as WriteStream
+  const tempPath = activeTempPath as string
+  clearActiveRecording()
+  setSelectedSourceId('')
+  await closeStream(stream).catch(() => undefined)
+  const size = await stat(tempPath).then(
+    (info) => info.size,
+    () => -1
+  )
+  if (size === 0) await unlink(tempPath).catch(() => undefined)
 }

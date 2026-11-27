@@ -1,11 +1,14 @@
 import { RecordingChunkWriter } from './chunkWriter'
 import { openMicrophone, type MicrophoneChain } from './microphone'
 import {
+  RecordingCancelledError,
   closeRecordingFile,
   openMicrophoneWithFallback,
   type MicChoice,
   type MicFailure
 } from './micFallback'
+import { ipcErrorMessage } from './ipcError'
+import { MIC_DISCONNECTED_MESSAGE, captureEndedMessage } from './trackEvents'
 import {
   DEFAULT_MAX_PROBES,
   DEFAULT_PROBE_BUDGET_MS,
@@ -47,6 +50,18 @@ interface VideoFrameCallbackVideo extends HTMLVideoElement {
 const PROBE_DURATION_MS = 800
 const DIAGNOSTICS_INTERVAL_MS = 500
 const MIC_STATE_INTERVAL_MS = 100
+/** If MediaRecorder never fires `stop`, the file is closed anyway after this delay. */
+export const STOP_FALLBACK_MS = 5000
+/** Upper bound for writing the queued chunks when stopping, so a stuck disk cannot freeze the UI. */
+export const FLUSH_TIMEOUT_MS = 20_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -80,6 +95,7 @@ export class ScreenRecorder {
   private cropFrameHandle?: number
   private cropVideo?: HTMLVideoElement
   private cropSource?: MediaStream
+  private captureKind: 'screen' | 'window' | 'unknown' = 'unknown'
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -100,6 +116,7 @@ export class ScreenRecorder {
     this.fileStarted = false
     this.sessionId = undefined
     this.lastRealFps = 0
+    this.captureKind = sourceKindOf(options.sourceId) ?? 'unknown'
     this.diagnostics = createEmptyDiagnostics({
       version: __APP_VERSION__,
       commit: __BUILD_COMMIT__
@@ -134,9 +151,11 @@ export class ScreenRecorder {
     } catch (error) {
       const name = error instanceof DOMException ? error.name : ''
       const detail = error instanceof Error ? error.message : String(error)
+      // The main process refuses the request when the selected source vanished in the meantime,
+      // which also surfaces as NotAllowedError.
       throw new Error(
         name === 'NotAllowedError'
-          ? `Screen permission was denied (${detail})`
+          ? `Screen capture was refused. The selected screen or window may have closed, or screen capture is blocked by Windows privacy settings (${detail})`
           : `Could not capture the screen: ${name} ${detail}`.trim(),
         { cause: error }
       )
@@ -155,7 +174,7 @@ export class ScreenRecorder {
     this.stream = displayStream
     if (this.stopped) {
       this.stopTracks()
-      throw new Error('Recording was cancelled')
+      throw new RecordingCancelledError()
     }
 
     let microphone: MicrophoneChain | undefined
@@ -199,7 +218,7 @@ export class ScreenRecorder {
       displayStream.getTracks().forEach((track) => track.stop())
       microphone?.dispose()
       this.microphone = undefined
-      throw new Error('Recording was cancelled')
+      throw new RecordingCancelledError()
     }
 
     const stream = new MediaStream([
@@ -220,14 +239,15 @@ export class ScreenRecorder {
         this.warn('Noise removal produced no sound, so the raw microphone signal is used instead.')
         this.log('Audio failsafe: switched to the raw microphone signal')
       }
-      microphone.track.onended = (): void => {
-        if (!this.stopped)
-          this.callbacks.onWarning?.('The microphone was disconnected. Audio may be missing.')
-      }
+      // The video keeps recording when the microphone goes away. The user decides when to stop.
+      microphone.sourceTrack.addEventListener('ended', () => {
+        if (this.stopped) return
+        this.warn(MIC_DISCONNECTED_MESSAGE)
+      })
     }
     if (this.stopped) {
       this.stopTracks()
-      throw new Error('Recording was cancelled')
+      throw new RecordingCancelledError()
     }
 
     const videoTrack = stream.getVideoTracks()[0]
@@ -286,12 +306,12 @@ export class ScreenRecorder {
       this.fileStarted = true
       this.sessionId = started.sessionId
       this.applyOverlayStatus(started.overlay)
-      if (this.stopped) throw new Error('Recording was cancelled')
+      if (this.stopped) throw new RecordingCancelledError()
 
       this.chunkWriter = new RecordingChunkWriter(
         (data) => window.api.recordingChunk({ sessionId: started.sessionId, data }),
         (error) => {
-          this.callbacks.onError(`Chunk write failed: ${error.message}`)
+          this.callbacks.onError(`Chunk write failed: ${ipcErrorMessage(error)}`)
           void this.stop()
         },
         {
@@ -314,7 +334,8 @@ export class ScreenRecorder {
       recorder.onresume = (): void => this.callbacks.onStatus('recording')
       videoTrack.onended = (): void => {
         if (!this.stopped) {
-          this.callbacks.onError('Screen capture stream ended')
+          this.log(`Video track ended (${this.captureKind})`)
+          this.callbacks.onError(captureEndedMessage(this.captureKind))
           void this.stop()
         }
       }
@@ -335,6 +356,8 @@ export class ScreenRecorder {
       } catch {
         // Some capture sources reject frame rate changes after start.
       }
+      // Stop was pressed while starting. The stop path owns the file now, so return quietly.
+      if (this.stopped) return
       this.startDiagnostics()
       this.startMicBridge()
       this.callbacks.onStatus('recording')
@@ -364,7 +387,19 @@ export class ScreenRecorder {
     this.callbacks.onStatus('stopping')
     if (this.mediaRecorder) {
       if (this.mediaRecorder.state !== 'inactive') {
-        this.mediaRecorder.stop()
+        const mime = this.mediaRecorder.mimeType || 'video/webm'
+        // finishStop runs from the recorder's stop event. The timer covers a recorder that never
+        // fires it, so the UI cannot stay in "Saving" forever.
+        this.finishFallback ??= setTimeout(() => {
+          this.log('MediaRecorder did not fire stop, closing the file anyway')
+          void this.finishStop(mime)
+        }, STOP_FALLBACK_MS)
+        try {
+          this.mediaRecorder.stop()
+        } catch (error) {
+          this.log(`MediaRecorder stop failed: ${String(error)}`)
+          await this.finishStop(mime)
+        }
         return
       }
       if (this.recorderStarted) {
@@ -398,7 +433,7 @@ export class ScreenRecorder {
       d.audio.denoised = mic.denoised
       d.audio.bypassed = mic.isBypassed()
       d.audio.deviceLabel = mic.deviceLabel
-      d.audio.trackState = mic.track.readyState
+      d.audio.trackState = mic.sourceTrack.readyState
       d.audio.muted = this.micMuted || !mic.track.enabled || mic.track.muted
     }
     d.video.actualFps = this.lastRealFps || d.video.actualFps
@@ -526,29 +561,41 @@ export class ScreenRecorder {
     this.finishing = true
     if (this.finishFallback) clearTimeout(this.finishFallback)
     this.finishFallback = undefined
-    this.stopTracks()
-    let chunkWriteError: Error | undefined
     try {
-      await this.chunkWriter?.flush()
-    } catch (error) {
-      chunkWriteError = error instanceof Error ? error : new Error(String(error))
-    }
-
-    if (this.fileStarted && this.sessionId) {
-      const sessionId = this.sessionId
-      const outcome = await closeRecordingFile(
-        (args) => window.api.recordingStop({ sessionId, mimeType, ...args }),
-        chunkWriteError
-      )
-      if (outcome.kind === 'saved') {
-        this.callbacks.onFile(outcome.filePath)
-        await this.verifySavedFile(outcome.filePath)
-      } else {
-        this.callbacks.onError(outcome.message)
+      this.stopTracks()
+      let chunkWriteError: Error | undefined
+      try {
+        if (this.chunkWriter) {
+          await withTimeout(
+            this.chunkWriter.flush(),
+            FLUSH_TIMEOUT_MS,
+            'Disk writes did not finish in time'
+          )
+        }
+      } catch (error) {
+        chunkWriteError = new Error(ipcErrorMessage(error, String(error)))
       }
+
+      if (this.fileStarted && this.sessionId) {
+        const sessionId = this.sessionId
+        const outcome = await closeRecordingFile(
+          (args) => window.api.recordingStop({ sessionId, mimeType, ...args }),
+          chunkWriteError
+        )
+        if (outcome.kind === 'saved') {
+          this.callbacks.onFile(outcome.filePath)
+          await this.verifySavedFile(outcome.filePath)
+        } else {
+          this.callbacks.onError(outcome.message)
+        }
+      }
+    } catch (error) {
+      this.callbacks.onError(`Saving the recording failed: ${ipcErrorMessage(error)}`)
+    } finally {
+      // Always leave the stopping state, whatever happened above.
+      this.cleanup()
+      this.callbacks.onStopped()
     }
-    this.cleanup()
-    this.callbacks.onStopped()
   }
 
   private async verifySavedFile(filePath: string): Promise<void> {
@@ -679,7 +726,8 @@ export class ScreenRecorder {
     if (sourceTrack) {
       sourceTrack.onended = (): void => {
         if (!this.stopped) {
-          this.callbacks.onError('Screen capture stream ended')
+          this.log(`Region source track ended (${this.captureKind})`)
+          this.callbacks.onError(captureEndedMessage(this.captureKind))
           void this.stop()
         }
       }

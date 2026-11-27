@@ -1,3 +1,5 @@
+import { ipcErrorMessage } from './ipcError'
+
 export type MicFailureKind = 'denied' | 'not-found' | 'in-use' | 'other'
 
 export interface MicFailure {
@@ -64,19 +66,36 @@ export function chunkWriteFailureMessage(error: Error, savedPath?: string): stri
 }
 
 export type StopOutcome =
-  { kind: 'saved'; filePath: string } | { kind: 'error'; message: string; keptAtPath: boolean }
+  | { kind: 'saved'; filePath: string }
+  | { kind: 'error'; message: string; keptAtPath: boolean; preservedPath?: string }
+
+/** Result of the main process stop call (see recordingStopOutputSchema). */
+export type StopResult =
+  | { ok: true; filePath: string }
+  | { ok: false; code: string; message: string; preservedPath?: string }
+
+export const RECOVERY_HINT = 'Use Recover in the "Unfinished recordings" list to save it.'
 
 /**
- * Closes the recording file. Chunk write errors never request a discard, so the
- * partial data stays on disk. Errors from the stop call keep their message when it
- * names the kept file (the main process includes the path).
+ * Closes the recording file. Chunk write errors never request a discard, so the partial data
+ * stays on disk. A failed stop names the kept .part and points to recovery. A rejected stop call
+ * (IPC failure) still produces an error outcome, so the caller can always reset the UI.
  */
 export async function closeRecordingFile(
-  stop: (args: { discard: boolean }) => Promise<{ filePath: string }>,
+  stop: (args: { discard: boolean }) => Promise<StopResult>,
   chunkWriteError: Error | undefined
 ): Promise<StopOutcome> {
+  let result: StopResult
   try {
-    const result = await stop({ discard: false })
+    result = await stop({ discard: false })
+  } catch (error) {
+    result = {
+      ok: false,
+      code: 'error',
+      message: ipcErrorMessage(error, 'Could not close the recording')
+    }
+  }
+  if (result.ok) {
     if (chunkWriteError) {
       return {
         kind: 'error',
@@ -85,17 +104,22 @@ export async function closeRecordingFile(
       }
     }
     return { kind: 'saved', filePath: result.filePath }
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : 'Could not close the recording'
-    if (!chunkWriteError)
-      return { kind: 'error', message: reason, keptAtPath: reason.includes('kept at') }
-    const names = reason.includes('kept at')
+  }
+  const preservedPath = result.preservedPath
+  if (!preservedPath) {
     return {
       kind: 'error',
-      message: names
-        ? `Chunk write failed: ${chunkWriteError.message}. ${reason}`
-        : chunkWriteFailureMessage(chunkWriteError),
-      keptAtPath: names
+      message: chunkWriteError ? chunkWriteFailureMessage(chunkWriteError) : result.message,
+      keptAtPath: false
     }
+  }
+  const reason = chunkWriteError
+    ? `Chunk write failed: ${chunkWriteError.message}. ${result.message}`
+    : result.message
+  return {
+    kind: 'error',
+    message: /\.part$/i.test(preservedPath) ? `${reason}. ${RECOVERY_HINT}` : reason,
+    keptAtPath: true,
+    preservedPath
   }
 }
