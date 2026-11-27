@@ -1,18 +1,10 @@
 /**
  * setContentProtection excludes a window from capture only on Windows 10 2004 (build 19041) or later.
- * Older builds show a black rectangle instead. `release` is os.release(), for example "10.0.19045".
+ * Older builds show a black rectangle instead, and there is no native hook here to erase the panel
+ * pixels, so on those builds the panel cannot be both visible and absent from the video.
+ * `release` is os.release(), for example "10.0.19045".
  */
 export const MIN_CAPTURE_EXCLUSION_BUILD = 19041
-
-export function supportsCaptureExclusion(platform: string, release: string): boolean {
-  if (platform !== 'win32') return true
-  const parts = release.split('.').map((part) => Number.parseInt(part, 10))
-  const major = parts[0]
-  const build = parts[2]
-  if (!Number.isFinite(major) || !Number.isFinite(build)) return true
-  if (major > 10) return true
-  return major === 10 && build >= MIN_CAPTURE_EXCLUSION_BUILD
-}
 
 export type CaptureExclusionMode = 'exclude' | 'include-unprotected'
 
@@ -31,10 +23,8 @@ export function parseWindowsBuild(release: string): number | null {
  */
 export function captureExclusionMode(
   platform: string,
-  release: string,
-  userIncludePanel = false
+  release: string
 ): CaptureExclusionMode {
-  if (userIncludePanel) return 'include-unprotected'
   if (platform !== 'win32') return 'exclude'
   const build = parseWindowsBuild(release)
   if (build === null) return 'exclude'
@@ -48,4 +38,23 @@ export function describeCaptureMode(
 ): string {
   const build = platform === 'win32' ? parseWindowsBuild(release) : null
   return `${build === null ? `${platform} ${release}` : `Windows build ${build}`}, panel capture: ${mode}`
+}
+
+export interface PanelProtectionPlan {
+  protect: boolean
+  logLevel: 'info' | 'warn'
+  message: string
+}
+
+/** Pure decision for the overlay: whether to call setContentProtection(true) and what to log. */
+export function panelProtectionPlan(platform: string, release: string): PanelProtectionPlan {
+  const mode = captureExclusionMode(platform, release)
+  const detail = describeCaptureMode(platform, release, mode)
+  return mode === 'exclude'
+    ? { protect: true, logLevel: 'info', message: `Panel content protection on (${detail})` }
+    : {
+        protect: false,
+        logLevel: 'warn',
+        message: `Panel content protection off, the panel will appear in recordings (${detail})`
+      }
 }

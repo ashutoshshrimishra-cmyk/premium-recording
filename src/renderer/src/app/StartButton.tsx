@@ -187,7 +187,8 @@ export const StartButton = memo(function StartButton() {
       {panelInVideo && (
         <p className="mb-2 text-[11px] text-[var(--muted)]">
           This Windows version cannot hide the annotation panel from screen capture, so the panel
-          appears in the video instead of a black box.
+          will appear in the recording. Update Windows to 10 version 2004 or later, or move the
+          panel to a second display, to keep it out of the video.
         </p>
       )}
       {diagnostics && (

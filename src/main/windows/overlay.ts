@@ -26,7 +26,7 @@ import { startCursorHook, stopCursorHook } from '../cursorHook'
 import { isPointInRect, sameSample, toDisplayRelative, type CursorSample } from './cursorMath'
 import { LOAD_ATTEMPTS, LOAD_TIMEOUT_MS, loadWithRetry, withTimeout } from './loadPolicy'
 import { isSenderOf } from './senderGate'
-import { captureExclusionMode, describeCaptureMode } from './platformCaps'
+import { panelProtectionPlan } from './platformCaps'
 import {
   clampToDisplays,
   dockBounds,
@@ -285,21 +285,10 @@ async function openToolbarWindow(display: Display): Promise<void> {
   toolbarWindow = win
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  const captureMode = captureExclusionMode(process.platform, release())
-  if (captureMode === 'exclude') {
-    // Keeps the panel out of the recording and out of screenshots.
-    win.setContentProtection(true)
-    log(
-      'info',
-      `Panel content protection on (${describeCaptureMode(process.platform, release(), captureMode)})`
-    )
-  } else {
-    // Old Windows builds paint protected windows as a black box, so the panel stays visible instead.
-    log(
-      'warn',
-      `Panel content protection off, the panel will appear in recordings (${describeCaptureMode(process.platform, release(), captureMode)})`
-    )
-  }
+  // Old Windows builds paint protected windows black, so there the panel stays unprotected and visible.
+  const plan = panelProtectionPlan(process.platform, release())
+  if (plan.protect) win.setContentProtection(true)
+  log(plan.logLevel, plan.message)
   win.on('closed', () => {
     if (toolbarWindow === win) toolbarWindow = undefined
   })

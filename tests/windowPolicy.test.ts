@@ -5,7 +5,6 @@ import {
   LOAD_TIMEOUT_MS,
   LOAD_ATTEMPTS
 } from '../src/main/windows/loadPolicy'
-import { supportsCaptureExclusion } from '../src/main/windows/platformCaps'
 import { isSenderOf } from '../src/main/windows/senderGate'
 import { isPointInRect } from '../src/main/windows/cursorMath'
 import { isProbePathAllowed } from '../src/main/ipc/probePath'
@@ -47,12 +46,6 @@ describe('load policy', () => {
 })
 
 describe('window policies', () => {
-  it('detects capture exclusion support', () => {
-    expect(supportsCaptureExclusion('win32', '10.0.19045')).toBe(true)
-    expect(supportsCaptureExclusion('win32', '10.0.18363')).toBe(false)
-    expect(supportsCaptureExclusion('darwin', '23.0.0')).toBe(true)
-  })
-
   it('gates senders by live window identity', () => {
     const live = { id: 7, isDestroyed: () => false }
     expect(isSenderOf(live, 7)).toBe(true)
