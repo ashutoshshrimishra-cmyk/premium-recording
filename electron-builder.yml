@@ -1,3 +1,6 @@
+# TODO: choose a final, stable reverse-DNS appId before a public release.
+# Changing it later makes Windows treat the app as a different install
+# (no in-place upgrade), so it is left unchanged for now.
 appId: com.electron.app
 productName: Premium Recording
 directories:
@@ -6,7 +9,7 @@ files:
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
@@ -14,6 +17,8 @@ asarUnpack:
   - node_modules/uiohook-napi/**
 win:
   executableName: premium-recording
+  # TODO: publisher name and code signing are not configured. Set the
+  # signing certificate (win.signtoolOptions) once a publisher is decided.
   icon: build/icon.ico
 nsis:
   installerIcon: build/icon.ico
@@ -45,8 +50,6 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
+publish: null
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

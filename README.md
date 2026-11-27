@@ -62,3 +62,19 @@ Global shortcuts (work while another app is in front, and can be changed in Sett
 | Save a screenshot (annotated) | Ctrl+Shift+S |
 
 On macOS Ctrl is Cmd. If another app already uses a shortcut, Settings shows which one failed to register.
+
+## Supported capture
+
+- Sources: screens, single windows, and a region of a screen.
+- Audio: microphone only. System audio is not captured.
+- Frame rate options: 24, 30 and 60 FPS.
+
+## Updates and signing
+
+- There is no auto-update. The app never checks for or downloads new versions.
+- The installer is not code signed, so Windows SmartScreen will show a warning. This is expected.
+- To upgrade, download the new installer and run it over the existing install.
+
+## Testing
+
+Manual Windows checks are listed in [docs/WINDOWS_QA.md](docs/WINDOWS_QA.md).

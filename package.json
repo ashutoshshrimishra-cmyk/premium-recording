@@ -1,10 +1,10 @@
 {
   "name": "premium-recording",
   "version": "1.4.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Screen recorder with annotations for Windows",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "Premium Recording",
+  "homepage": "https://github.com/ashutoshshrimishra-cmyk/premium-recording",
   "scripts": {
     "test": "vitest run",
     "format": "prettier --write .",
@@ -27,7 +27,6 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@timephy/rnnoise-wasm": "^1.0.0",
     "electron-store": "^12.0.0",
-    "electron-updater": "^6.8.9",
     "lucide-react": "^1.76.0",
     "uiohook-napi": "^1.5.5",
     "zod": "^4.6.7",
