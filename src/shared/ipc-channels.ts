@@ -28,5 +28,13 @@ export const IPC_CHANNELS = {
   diagnosticsLog: 'diagnostics-log',
   diagnosticsGetInfo: 'diagnostics-get-info',
   diagnosticsShowLog: 'diagnostics-show-log',
-  diagnosticsProbeFile: 'diagnostics-probe-file'
+  diagnosticsProbeFile: 'diagnostics-probe-file',
+  shortcutsGet: 'shortcuts-get',
+  shortcutsSet: 'shortcuts-set',
+  shortcutsSuspend: 'shortcuts-suspend',
+  shortcutAction: 'shortcut-action',
+  recentList: 'recent-list',
+  recentAdd: 'recent-add',
+  recentOpen: 'recent-open',
+  recentShow: 'recent-show'
 } as const

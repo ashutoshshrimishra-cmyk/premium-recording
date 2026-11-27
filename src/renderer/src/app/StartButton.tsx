@@ -3,6 +3,8 @@ import { Circle, Pause, Play, Square } from 'lucide-react'
 import { useRecorderStore } from './store'
 import { ScreenRecorder } from '../recorder/recorder'
 import { formatDiagnostics, type RecordingDiagnostics } from '../recorder/diagnostics'
+import { runCountdown } from '../recorder/countdown'
+import { showShortcut } from './platform'
 
 type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -15,6 +17,9 @@ export const StartButton = memo(function StartButton() {
   const saveDir = useRecorderStore((state) => state.saveDir)
   const audioDeviceId = useRecorderStore((state) => state.audioDeviceId)
   const noiseSuppression = useRecorderStore((state) => state.noiseSuppression)
+  const shortcuts = useRecorderStore((state) => state.shortcuts)
+  const countdownCancelled = useRef(false)
+  const shortcutHandlerRef = useRef<(action: 'startStop' | 'pauseResume') => void>(() => undefined)
   const recorderRef = useRef<ScreenRecorder | undefined>(undefined)
   const startingRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -30,6 +35,7 @@ export const StartButton = memo(function StartButton() {
   const [diagnostics, setDiagnostics] = useState<RecordingDiagnostics | undefined>(undefined)
   const [logPath, setLogPath] = useState('')
   const [panelInVideo, setPanelInVideo] = useState(false)
+  const [countdown, setCountdown] = useState<number | null>(null)
 
   useEffect(() => {
     void window.api
@@ -51,6 +57,8 @@ export const StartButton = memo(function StartButton() {
     },
     []
   )
+
+  useEffect(() => window.api.onShortcutAction((action) => shortcutHandlerRef.current(action)), [])
 
   const updateStatus = (next: Exclude<RecorderStatus, 'idle'>): void => {
     const now = Date.now()
@@ -94,7 +102,10 @@ export const StartButton = memo(function StartButton() {
       onDiagnostics: setDiagnostics,
       onMimeType: setMimeType,
       onRealFps: setRealFps,
-      onFile: (filePath) => setMessage(`Saved: ${filePath}`),
+      onFile: (filePath) => {
+        setMessage(`Saved: ${filePath}`)
+        void rememberRecording(filePath, accumulatedMsRef.current)
+      },
       onStopped: () => {
         updateElapsed()
         if (timerRef.current) clearInterval(timerRef.current)
@@ -127,6 +138,38 @@ export const StartButton = memo(function StartButton() {
     }
   }
 
+  const rememberRecording = async (filePath: string, durationMs: number): Promise<void> => {
+    try {
+      const list = await window.api.recentAdd(filePath, durationMs)
+      useRecorderStore.getState().setRecent(list)
+      if (useRecorderStore.getState().openFolderAfterSave) await window.api.recentShow(filePath)
+    } catch {
+      // The recording is saved, only the recent list could not be updated.
+    }
+  }
+
+  const begin = async (): Promise<void> => {
+    if (startingRef.current || countdown !== null) return
+    const seconds = useRecorderStore.getState().countdownSeconds
+    if (seconds > 0) {
+      countdownCancelled.current = false
+      setMessage('')
+      const finished = await runCountdown(
+        seconds,
+        setCountdown,
+        () => countdownCancelled.current,
+        (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      )
+      setCountdown(null)
+      if (!finished) return
+    }
+    await start()
+  }
+
+  const cancelCountdown = (): void => {
+    countdownCancelled.current = true
+  }
+
   const stop = (): void => void recorderRef.current?.stop()
   const pause = (): void => recorderRef.current?.pause()
   const resume = (): void => recorderRef.current?.resume()
@@ -135,6 +178,17 @@ export const StartButton = memo(function StartButton() {
   const enabled =
     sourceMatchesMode && saveDir.length > 0 && (captureMode !== 'region' || region !== undefined)
   const isActive = status !== 'idle'
+  const counting = countdown !== null
+  shortcutHandlerRef.current = (action): void => {
+    if (action === 'pauseResume') {
+      if (statusRef.current === 'recording') pause()
+      else if (statusRef.current === 'paused') resume()
+      return
+    }
+    if (counting) cancelCountdown()
+    else if (statusRef.current === 'recording' || statusRef.current === 'paused') stop()
+    else if (statusRef.current === 'idle' && enabled) void begin()
+  }
   const micLevel = diagnostics
     ? Math.min(1, Math.max(diagnostics.audio.rawLevel, diagnostics.audio.processedLevel) * 2)
     : 0
@@ -149,7 +203,7 @@ export const StartButton = memo(function StartButton() {
               {status === 'paused'
                 ? 'Paused'
                 : status === 'stopping'
-                  ? 'Stopping'
+                  ? 'Saving recording'
                   : status === 'starting'
                     ? 'Starting'
                     : 'Recording'}{' '}
@@ -157,6 +211,15 @@ export const StartButton = memo(function StartButton() {
             </span>
             <span>{realFps.toFixed(1)} real FPS</span>
           </div>
+          {status === 'stopping' && (
+            <div
+              className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--border)]"
+              role="progressbar"
+              aria-label="Saving recording"
+            >
+              <div className="h-full w-1/3 animate-pulse rounded bg-[var(--accent)]" />
+            </div>
+          )}
           {mimeType && (
             <div className="mt-1 text-[var(--muted)]">
               {mimeType.includes('mp4') ? 'MP4' : 'WebM'} · {mimeType}
@@ -164,8 +227,9 @@ export const StartButton = memo(function StartButton() {
           )}
           <div className="mt-1 text-[var(--muted)]">
             The annotation panel is on the right side of the screen. Drag it to move it or use its
-            dock buttons. It is not recorded. Mouse mode lets you use the desktop · Ctrl/Cmd+Shift+A
-            toggles it · Ctrl/Cmd+Shift+S stops
+            dock buttons. It is not recorded. Mouse mode lets you use the desktop ·{' '}
+            {showShortcut(shortcuts.toggleAnnotation)} toggles it ·{' '}
+            {showShortcut(shortcuts.startStop)} stops · {showShortcut(shortcuts.pauseResume)} pauses
           </div>
         </div>
       )}
@@ -230,11 +294,23 @@ export const StartButton = memo(function StartButton() {
           {message}
         </div>
       )}
-      {!isActive ? (
+      {!isActive && counting ? (
+        <button
+          type="button"
+          onClick={cancelCountdown}
+          className="flex h-11 w-full items-center justify-center gap-3 rounded-lg border border-[var(--accent)] text-sm font-semibold"
+        >
+          <span className="text-2xl tabular-nums" role="timer" aria-live="polite">
+            {countdown}
+          </span>
+          Recording starts, click to cancel ({showShortcut(shortcuts.startStop)})
+        </button>
+      ) : !isActive ? (
         <button
           type="button"
           disabled={!enabled}
-          onClick={() => void start()}
+          title={`Start recording (${showShortcut(shortcuts.startStop)})`}
+          onClick={() => void begin()}
           className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--accent)] text-sm font-semibold text-white hover:bg-[var(--accent-hover)] disabled:bg-[var(--border)] disabled:text-[var(--muted)]"
         >
           <Circle className="size-4" aria-hidden="true" />
@@ -243,6 +319,9 @@ export const StartButton = memo(function StartButton() {
             : captureMode === 'region'
               ? 'Start Region Recording'
               : 'Start Screen Recording'}
+          <span className="text-xs font-normal opacity-80">
+            {showShortcut(shortcuts.startStop)}
+          </span>
         </button>
       ) : (
         <div className="grid grid-cols-3 gap-2">
@@ -250,6 +329,7 @@ export const StartButton = memo(function StartButton() {
             <button
               type="button"
               onClick={resume}
+              title={`Resume (${showShortcut(shortcuts.pauseResume)})`}
               className="flex h-10 items-center justify-center gap-1 rounded-lg border border-[var(--border)] text-sm"
             >
               <Play className="size-4" /> Resume
@@ -259,6 +339,7 @@ export const StartButton = memo(function StartButton() {
               type="button"
               disabled={status !== 'recording'}
               onClick={pause}
+              title={`Pause (${showShortcut(shortcuts.pauseResume)})`}
               className="flex h-10 items-center justify-center gap-1 rounded-lg border border-[var(--border)] text-sm disabled:text-[var(--muted)]"
             >
               <Pause className="size-4" /> Pause
@@ -268,6 +349,7 @@ export const StartButton = memo(function StartButton() {
             type="button"
             disabled={status === 'stopping'}
             onClick={stop}
+            title={`Stop (${showShortcut(shortcuts.startStop)})`}
             className="flex h-10 items-center justify-center gap-1 rounded-lg border border-[var(--border)] text-sm disabled:text-[var(--muted)]"
           >
             <Square className="size-4" /> Stop

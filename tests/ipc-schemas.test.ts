@@ -16,8 +16,10 @@ import {
   panelSetLayoutInputSchema,
   panelLayoutSchema,
   overlayCommandSchema,
-  overlayCursorSchema
+  overlayCursorSchema,
+  settingsSchema
 } from '../src/shared/ipc-schemas'
+import { DEFAULT_SHORTCUTS } from '../src/shared/shortcuts'
 
 describe('IPC schemas', () => {
   it('accepts valid get-sources input and output', () => {
@@ -180,5 +182,33 @@ describe('IPC schemas', () => {
     ).toBe(false)
     expect(overlayCursorSchema.safeParse({ x: 1, y: 2, inside: true }).success).toBe(true)
     expect(overlayCursorSchema.safeParse({ x: 1, y: 2 }).success).toBe(false)
+  })
+})
+
+describe('settings backward compatibility', () => {
+  const v12 = { saveDir: 'C:\\Videos', fps: 30, resolution: '1080p', noiseSuppression: true }
+
+  it('loads settings saved by version 1.2 and fills defaults', () => {
+    const result = settingsSchema.parse(v12)
+    expect(result.countdownSeconds).toBe(3)
+    expect(result.openFolderAfterSave).toBe(false)
+    expect(result.cursorEffect).toBe(true)
+    expect(result.annotationStartsActive).toBe(true)
+    expect(result.shortcuts).toEqual(DEFAULT_SHORTCUTS)
+  })
+
+  it('keeps partial shortcut overrides and fills the rest', () => {
+    const result = settingsSchema.parse({ ...v12, shortcuts: { startStop: 'Alt+F9' } })
+    expect(result.shortcuts.startStop).toBe('Alt+F9')
+    expect(result.shortcuts.screenshot).toBe(DEFAULT_SHORTCUTS.screenshot)
+  })
+
+  it('rejects a countdown that is not offered', () => {
+    expect(settingsSchema.safeParse({ ...v12, countdownSeconds: 7 }).success).toBe(false)
+  })
+
+  it('round trips through the set-settings schema', () => {
+    const once = setSettingsInputSchema.parse(v12)
+    expect(setSettingsInputSchema.parse(once)).toEqual(once)
   })
 })

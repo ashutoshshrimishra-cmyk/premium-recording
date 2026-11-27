@@ -2,7 +2,6 @@ import {
   app,
   BrowserWindow,
   desktopCapturer,
-  globalShortcut,
   screen,
   type Display,
   type WebContents
@@ -530,18 +529,4 @@ export function requestRecordingStop(): boolean {
   if (!recordingOwner || recordingOwner.isDestroyed()) return false
   recordingOwner.send(IPC_CHANNELS.recordingStopRequested)
   return true
-}
-
-export function registerOverlayShortcuts(): void {
-  globalShortcut.register('CommandOrControl+Shift+A', () => {
-    toggleAnnotationInteractive()
-  })
-  globalShortcut.register('CommandOrControl+Shift+S', () => {
-    requestRecordingStop()
-  })
-}
-
-export function unregisterOverlayShortcuts(): void {
-  globalShortcut.unregister('CommandOrControl+Shift+A')
-  globalShortcut.unregister('CommandOrControl+Shift+S')
 }

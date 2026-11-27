@@ -24,7 +24,11 @@ import type {
   PanelLayout,
   PanelSetLayoutInput,
   DiagnosticsInfo,
-  DiagnosticsProbeFileOutput
+  DiagnosticsProbeFileOutput,
+  RecentRecording,
+  ShortcutActionEvent,
+  ShortcutsConfig,
+  ShortcutsResult
 } from '../shared/ipc-schemas'
 
 interface RecorderApi {
@@ -55,6 +59,14 @@ interface RecorderApi {
   diagnosticsGetInfo(): Promise<DiagnosticsInfo>
   diagnosticsShowLog(): Promise<boolean>
   diagnosticsProbeFile(filePath: string): Promise<DiagnosticsProbeFileOutput>
+  shortcutsGet(): Promise<ShortcutsResult>
+  shortcutsSet(shortcuts: ShortcutsConfig): Promise<ShortcutsResult>
+  shortcutsSuspend(suspended: boolean): Promise<boolean>
+  onShortcutAction(callback: (action: ShortcutActionEvent) => void): () => void
+  recentList(): Promise<RecentRecording[]>
+  recentAdd(filePath: string, durationMs: number): Promise<RecentRecording[]>
+  recentOpen(filePath: string): Promise<boolean>
+  recentShow(filePath: string): Promise<boolean>
   onOverlayCursor(callback: (cursor: OverlayCursor) => void): () => void
   onOverlayClick(callback: (click: OverlayClick) => void): () => void
   onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void

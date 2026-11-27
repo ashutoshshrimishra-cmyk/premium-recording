@@ -26,7 +26,11 @@ import type {
   PanelLayout,
   PanelSetLayoutInput,
   DiagnosticsInfo,
-  DiagnosticsProbeFileOutput
+  DiagnosticsProbeFileOutput,
+  RecentRecording,
+  ShortcutActionEvent,
+  ShortcutsConfig,
+  ShortcutsResult
 } from '../shared/ipc-schemas'
 
 const api = {
@@ -115,6 +119,26 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.diagnosticsShowLog, undefined),
   diagnosticsProbeFile: (filePath: string): Promise<DiagnosticsProbeFileOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.diagnosticsProbeFile, { filePath }),
+  shortcutsGet: (): Promise<ShortcutsResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.shortcutsGet, undefined),
+  shortcutsSet: (shortcuts: ShortcutsConfig): Promise<ShortcutsResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.shortcutsSet, shortcuts),
+  shortcutsSuspend: (suspended: boolean): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.shortcutsSuspend, { suspended }),
+  onShortcutAction: (callback: (action: ShortcutActionEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, action: ShortcutActionEvent): void =>
+      callback(action)
+    ipcRenderer.on(IPC_CHANNELS.shortcutAction, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.shortcutAction, listener)
+  },
+  recentList: (): Promise<RecentRecording[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recentList, undefined),
+  recentAdd: (filePath: string, durationMs: number): Promise<RecentRecording[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recentAdd, { filePath, durationMs }),
+  recentOpen: (filePath: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recentOpen, { filePath }),
+  recentShow: (filePath: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recentShow, { filePath }),
   onOverlayInteractiveChanged: (callback: (interactive: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, interactive: boolean): void =>
       callback(interactive)

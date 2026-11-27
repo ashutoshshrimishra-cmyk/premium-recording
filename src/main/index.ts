@@ -8,11 +8,8 @@ import { BUILD_COMMIT, BUILD_TIME } from './buildInfo'
 import { release } from 'node:os'
 import { captureExclusionMode, describeCaptureMode } from './windows/platformCaps'
 import { discardActiveRecording, getSelectedSourceId, setSelectedSourceId } from './recording'
-import {
-  closeAnnotationOverlay,
-  registerOverlayShortcuts,
-  unregisterOverlayShortcuts
-} from './windows/overlay'
+import { closeAnnotationOverlay } from './windows/overlay'
+import { setShortcutTarget, unregisterShortcuts } from './shortcuts/shortcutManager'
 
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
@@ -37,6 +34,7 @@ function createWindow(): void {
     }
   })
 
+  setShortcutTarget(mainWindow.webContents)
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -70,7 +68,6 @@ app.whenReady().then(() => {
     log('warn', 'Could not read GPU feature status', error)
   }
   registerIpc()
-  registerOverlayShortcuts()
   const isOwnOrigin = (origin: string): boolean => {
     if (origin.startsWith('file://')) return true
     const rendererUrl = process.env.ELECTRON_RENDERER_URL
@@ -125,7 +122,7 @@ let finishingQuit = false
 app.on('before-quit', (event) => {
   if (finishingQuit) return
   event.preventDefault()
-  unregisterOverlayShortcuts()
+  unregisterShortcuts()
   closeAnnotationOverlay()
   void discardActiveRecording().finally(() => {
     finishingQuit = true

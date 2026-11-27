@@ -42,6 +42,8 @@ import type {
   OverlayTool,
   PanelDock
 } from '../../../shared/ipc-schemas'
+import { showShortcut } from '../app/platform'
+import { DEFAULT_SHORTCUTS } from '../../../shared/shortcuts'
 import { cursorEffectSettingsSchema } from '../../../shared/ipc-schemas'
 import { defaultCursorEffect, type CursorEffectSettings } from '../overlay/cursorEffect'
 import {
@@ -185,7 +187,21 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const [mic, setMic] = useState<MicState>(INITIAL_MIC)
   const [cursorEffect, setCursorEffect] = useState<CursorEffectSettings>(loadCursorEffect)
+  const [shortcuts, setShortcuts] = useState(DEFAULT_SHORTCUTS)
   const vertical = dock === 'left' || dock === 'right'
+
+  // Shortcut hints and the cursor effect default come from the saved settings.
+  useEffect(() => {
+    window.api
+      .getSettings()
+      .then((settings) => {
+        setShortcuts(settings.shortcuts)
+        if (!settings.cursorEffect) {
+          setCursorEffect((current) => ({ ...current, highlight: false, ripple: false }))
+        }
+      })
+      .catch(() => undefined)
+  }, [])
 
   const sendMic = useCallback((command: MicCommand): void => {
     window.api.panelSendMicCommand(command).catch((error: unknown) => {
@@ -531,7 +547,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
     )
   } else {
     const hints: Record<OverlayTool, string> = {
-      mouse: 'Mouse mode: use your desktop. Press Ctrl+Shift+A or pick a tool to draw again.',
+      mouse: `Mouse mode: use your desktop. Press ${showShortcut(shortcuts.toggleAnnotation)} or pick a tool to draw again.`,
       select: 'Click an annotation and drag to move it. Press Delete to remove it.',
       text: 'Click on the screen, type, then press Enter to place the text. Esc cancels.',
       draw: '',
@@ -606,7 +622,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
       />
       <ToolButton
         label={saveLabel}
-        title="Save a screenshot of the screen with your annotations"
+        title={`Save a screenshot of the screen with your annotations (${showShortcut(shortcuts.screenshot)})`}
         icon={
           saveState === 'saved' ? (
             <Check size={vertical ? 20 : 22} />
@@ -669,7 +685,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
             <button
               type="button"
               className="tb-stop"
-              title="Stop recording (Ctrl+Shift+S)"
+              title={`Stop recording (${showShortcut(shortcuts.startStop)})`}
               disabled={stopping}
               onClick={requestStop}
             >
@@ -698,7 +714,7 @@ const ToolbarApp = memo(function ToolbarApp(): React.JSX.Element {
         <button
           type="button"
           className="tb-stop"
-          title="Stop recording (Ctrl+Shift+S)"
+          title={`Stop recording (${showShortcut(shortcuts.startStop)})`}
           disabled={stopping}
           onClick={requestStop}
         >

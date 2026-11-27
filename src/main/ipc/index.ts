@@ -11,7 +11,8 @@ import {
 import { displayLabel, matchDisplay, sortDisplays, sourceKindOf } from '../../shared/sourceId'
 import { captureExclusionMode, parseWindowsBuild } from '../windows/platformCaps'
 import { randomUUID } from 'node:crypto'
-import { open } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { open, stat } from 'node:fs/promises'
 import { release } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import Store from 'electron-store'
@@ -59,10 +60,32 @@ import {
   diagnosticsShowLogOutputSchema,
   diagnosticsProbeFileInputSchema,
   diagnosticsProbeFileOutputSchema,
-  type Settings
+  settingsSchema,
+  shortcutsGetInputSchema,
+  shortcutsSetInputSchema,
+  shortcutsResultSchema,
+  shortcutsSuspendInputSchema,
+  shortcutsSuspendOutputSchema,
+  recentListInputSchema,
+  recentListOutputSchema,
+  recentAddInputSchema,
+  recentPathInputSchema,
+  recentActionOutputSchema,
+  type RecentRecording,
+  type Settings,
+  type ShortcutFailure,
+  type ShortcutsConfig
 } from '../../shared/ipc-schemas'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { detectAudioTrack } from '../../shared/containerProbe'
+import { addRecent, pruneMissing } from '../../shared/recentRecordings'
+import {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTIONS,
+  findDuplicates,
+  validateAccelerator
+} from '../../shared/shortcuts'
+import { applyShortcuts, getShortcutFailures, suspendShortcuts } from '../shortcuts/shortcutManager'
 import { isProbePathAllowed } from './probePath'
 import { getLogPath, log } from '../logger'
 import { BUILD_COMMIT } from '../buildInfo'
@@ -106,7 +129,12 @@ function getSettingsDefaults(): Settings {
     fps: 30,
     resolution: '1080p',
     noiseSuppression: true,
-    audioDeviceId: 'default'
+    audioDeviceId: 'default',
+    countdownSeconds: 3,
+    openFolderAfterSave: false,
+    cursorEffect: true,
+    annotationStartsActive: true,
+    shortcuts: { ...DEFAULT_SHORTCUTS }
   }
 }
 
@@ -212,26 +240,154 @@ export function registerIpc(): void {
     return pickFolderOutputSchema.parse(result.canceled ? null : (result.filePaths[0] ?? null))
   })
 
-  ipcMain.handle(IPC_CHANNELS.getSettings, (event, input: unknown) => {
-    validateSender(event)
-    getSettingsInputSchema.parse(input)
-    const result: Settings = {
-      saveDir: ((saved: string): string => (isAbsolute(saved) ? saved : settingsDefaults.saveDir))(
-        store.get('saveDir', settingsDefaults.saveDir)
-      ),
+  const readSettings = (): Settings => {
+    const saved = store.get('saveDir', settingsDefaults.saveDir)
+    const raw = {
+      saveDir: isAbsolute(saved) ? saved : settingsDefaults.saveDir,
       fps: store.get('fps', settingsDefaults.fps),
       resolution: store.get('resolution', settingsDefaults.resolution),
       noiseSuppression: store.get('noiseSuppression', settingsDefaults.noiseSuppression),
-      audioDeviceId: store.get('audioDeviceId', 'default') || 'default'
+      audioDeviceId: store.get('audioDeviceId', 'default') || 'default',
+      countdownSeconds: store.get('countdownSeconds', settingsDefaults.countdownSeconds),
+      openFolderAfterSave: store.get('openFolderAfterSave', settingsDefaults.openFolderAfterSave),
+      cursorEffect: store.get('cursorEffect', settingsDefaults.cursorEffect),
+      annotationStartsActive: store.get(
+        'annotationStartsActive',
+        settingsDefaults.annotationStartsActive
+      ),
+      shortcuts: store.get('shortcuts', settingsDefaults.shortcuts)
     }
-    return getSettingsOutputSchema.parse(result)
+    const parsed = settingsSchema.safeParse(raw)
+    if (parsed.success) return parsed.data
+    log('warn', 'Stored settings are invalid, using defaults', parsed.error)
+    return settingsDefaults
+  }
+
+  const shortcutsResult = (shortcuts: ShortcutsConfig, failed: ShortcutFailure[]): unknown => ({
+    ok: failed.length === 0,
+    failed,
+    shortcuts
+  })
+
+  // Registers the saved shortcuts at startup. Failures are reported to the settings screen later.
+  applyShortcuts(readSettings().shortcuts)
+
+  ipcMain.handle(IPC_CHANNELS.getSettings, (event, input: unknown) => {
+    validateSender(event)
+    getSettingsInputSchema.parse(input)
+    return getSettingsOutputSchema.parse(readSettings())
   })
 
   ipcMain.handle(IPC_CHANNELS.setSettings, (event, input: unknown) => {
     validateSender(event)
     const settings = setSettingsInputSchema.parse(input)
-    store.set({ ...settings, audioDeviceId: settings.audioDeviceId ?? 'default' })
-    return setSettingsOutputSchema.parse(settings)
+    const previous = readSettings().shortcuts
+    // Shortcuts are only changed through shortcutsSet, which validates them.
+    store.set({
+      ...settings,
+      audioDeviceId: settings.audioDeviceId ?? 'default',
+      shortcuts: previous
+    })
+    return setSettingsOutputSchema.parse({ ...settings, shortcuts: previous })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.shortcutsGet, (event, input: unknown) => {
+    validateSender(event)
+    shortcutsGetInputSchema.parse(input)
+    return shortcutsResultSchema.parse(
+      shortcutsResult(readSettings().shortcuts, getShortcutFailures())
+    )
+  })
+
+  ipcMain.handle(IPC_CHANNELS.shortcutsSet, (event, input: unknown) => {
+    validateSender(event)
+    const requested = shortcutsSetInputSchema.parse(input)
+    const normalized = { ...requested }
+    const failed: ShortcutFailure[] = []
+    for (const action of SHORTCUT_ACTIONS) {
+      const check = validateAccelerator(requested[action])
+      if (check.valid && check.accelerator) normalized[action] = check.accelerator
+      else
+        failed.push({ action, accelerator: requested[action], reason: check.reason ?? 'Invalid' })
+    }
+    for (const group of findDuplicates(normalized)) {
+      for (const action of group.actions.slice(1)) {
+        failed.push({
+          action,
+          accelerator: normalized[action],
+          reason: 'Already used by another action'
+        })
+      }
+    }
+    if (failed.length > 0) {
+      // Nothing is saved when the input is invalid, the active shortcuts stay as they were.
+      return shortcutsResultSchema.parse(shortcutsResult(readSettings().shortcuts, failed))
+    }
+    store.set('shortcuts', normalized)
+    const registrationFailures = applyShortcuts(normalized)
+    return shortcutsResultSchema.parse(shortcutsResult(normalized, registrationFailures))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.shortcutsSuspend, (event, input: unknown) => {
+    validateSender(event)
+    const { suspended } = shortcutsSuspendInputSchema.parse(input)
+    suspendShortcuts(suspended)
+    return shortcutsSuspendOutputSchema.parse(true)
+  })
+
+  const recentStore = new Store<{ items: RecentRecording[] }>({
+    name: 'recent-recordings',
+    defaults: { items: [] }
+  })
+  const readRecent = (): RecentRecording[] => {
+    const items = pruneMissing(recentStore.get('items', []), (filePath) => existsSync(filePath))
+    recentStore.set('items', items)
+    return items
+  }
+
+  ipcMain.handle(IPC_CHANNELS.recentList, (event, input: unknown) => {
+    validateSender(event)
+    recentListInputSchema.parse(input)
+    return recentListOutputSchema.parse(readRecent())
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recentAdd, async (event, input: unknown) => {
+    validateSender(event)
+    const { filePath, durationMs } = recentAddInputSchema.parse(input)
+    // Only the file that was just saved can be added.
+    if (filePath !== getLastSavedRecordingPath()) {
+      throw new Error('Only the most recently saved recording can be added')
+    }
+    const { size } = await stat(filePath)
+    const items = addRecent(readRecent(), {
+      filePath,
+      sizeBytes: size,
+      durationMs,
+      savedAt: new Date().toISOString()
+    })
+    recentStore.set('items', items)
+    return recentListOutputSchema.parse(items)
+  })
+
+  const recentPath = (input: unknown): string => {
+    const { filePath } = recentPathInputSchema.parse(input)
+    if (!readRecent().some((item) => item.filePath === filePath)) {
+      throw new Error('That recording is not in the recent list')
+    }
+    return filePath
+  }
+
+  ipcMain.handle(IPC_CHANNELS.recentOpen, async (event, input: unknown) => {
+    validateSender(event)
+    const error = await shell.openPath(recentPath(input))
+    if (error) throw new Error(error)
+    return recentActionOutputSchema.parse(true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recentShow, (event, input: unknown) => {
+    validateSender(event)
+    shell.showItemInFolder(recentPath(input))
+    return recentActionOutputSchema.parse(true)
   })
 
   ipcMain.handle(IPC_CHANNELS.recordingSelectSource, (event, input: unknown) => {
@@ -300,6 +456,13 @@ export function registerIpc(): void {
         sourceKindOf(source.id) !== 'window'
       )
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
+      if (overlay.canvas && !readSettings().annotationStartsActive) {
+        try {
+          setAnnotationInteractive(false)
+        } catch (error) {
+          log('warn', 'Could not start in mouse mode', error)
+        }
+      }
       if (overlay.toolbar) {
         if (win && !win.isDestroyed() && !win.isMinimized()) {
           win.minimize()

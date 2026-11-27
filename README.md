@@ -44,3 +44,21 @@ The Cursor section controls what the video shows for the mouse:
 - Show pointer: draws an arrow pointer. Turn it on if the cursor is missing in the video.
 
 The app writes a log file to `userData/logs/premium-recording.log` (on Windows `%APPDATA%\premium-recording\logs\premium-recording.log`). The main window header shows the installed version and commit, which confirms which build is running.
+
+## Capture modes, settings and shortcuts
+
+- Capture modes: full screen (every monitor is listed), a single window, or a region of a screen. Window mode records the window without the annotation canvas.
+- Settings (gear button in the header): frame rate, resolution, microphone, AI noise removal, save folder, countdown (off, 3 or 5 seconds), showing the folder after saving, cursor effect, and whether recording starts with drawing tools or in mouse mode.
+- A countdown can be cancelled by clicking the button or pressing the start/stop shortcut. While a file is finalised the app shows a saving indicator, then the saved path.
+- The last 10 recordings are listed with duration, size and date. Each can be opened or shown in its folder. Files that no longer exist are removed from the list.
+
+Global shortcuts (work while another app is in front, and can be changed in Settings):
+
+| Action                        | Default      |
+| ----------------------------- | ------------ |
+| Start / stop recording        | Ctrl+Shift+R |
+| Pause / resume recording      | Ctrl+Shift+P |
+| Toggle drawing and mouse mode | Ctrl+Shift+A |
+| Save a screenshot (annotated) | Ctrl+Shift+S |
+
+On macOS Ctrl is Cmd. If another app already uses a shortcut, Settings shows which one failed to register.

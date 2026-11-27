@@ -1,12 +1,64 @@
 import { z } from 'zod'
+import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS } from './shortcuts'
 
+const shortcutString = (fallback: string): z.ZodDefault<z.ZodString> =>
+  z.string().min(1).max(60).default(fallback)
+
+export const shortcutsSchema = z.object({
+  startStop: shortcutString(DEFAULT_SHORTCUTS.startStop),
+  pauseResume: shortcutString(DEFAULT_SHORTCUTS.pauseResume),
+  toggleAnnotation: shortcutString(DEFAULT_SHORTCUTS.toggleAnnotation),
+  screenshot: shortcutString(DEFAULT_SHORTCUTS.screenshot)
+})
+
+/** Fields added after 1.2 have defaults, so settings saved by older versions still load. */
 export const settingsSchema = z.object({
   saveDir: z.string().min(1),
   fps: z.number().int().positive(),
   resolution: z.enum(['1080p', '1440p', '4K']),
   noiseSuppression: z.boolean(),
-  audioDeviceId: z.string().min(1).optional()
+  audioDeviceId: z.string().min(1).optional(),
+  countdownSeconds: z.union([z.literal(0), z.literal(3), z.literal(5)]).default(3),
+  openFolderAfterSave: z.boolean().default(false),
+  cursorEffect: z.boolean().default(true),
+  annotationStartsActive: z.boolean().default(true),
+  shortcuts: shortcutsSchema.prefault({})
 })
+
+export const shortcutActionSchema = z.enum(SHORTCUT_ACTIONS)
+export const shortcutFailureSchema = z.object({
+  action: shortcutActionSchema,
+  accelerator: z.string(),
+  reason: z.string()
+})
+export const shortcutsResultSchema = z.object({
+  ok: z.boolean(),
+  failed: z.array(shortcutFailureSchema),
+  shortcuts: shortcutsSchema
+})
+export const shortcutsGetInputSchema = z.void()
+export const shortcutsSetInputSchema = shortcutsSchema
+export const shortcutsSuspendInputSchema = z.object({ suspended: z.boolean() })
+export const shortcutsSuspendOutputSchema = z.boolean()
+export const shortcutActionEventSchema = z.enum(['startStop', 'pauseResume'])
+
+export const recentRecordingSchema = z.object({
+  filePath: z.string().min(1),
+  sizeBytes: z.number().nonnegative(),
+  durationMs: z.number().nonnegative(),
+  savedAt: z.string()
+})
+export const recentListInputSchema = z.void()
+export const recentListOutputSchema = z.array(recentRecordingSchema)
+export const recentAddInputSchema = z.object({
+  filePath: z.string().min(1),
+  durationMs: z
+    .number()
+    .nonnegative()
+    .max(1000 * 60 * 60 * 72)
+})
+export const recentPathInputSchema = z.object({ filePath: z.string().min(1) })
+export const recentActionOutputSchema = z.boolean()
 
 export const getSourcesInputSchema = z.object({ kind: z.enum(['screen', 'window']) })
 export const getSourcesOutputSchema = z.array(
@@ -213,6 +265,11 @@ export const diagnosticsProbeFileInputSchema = z.object({ filePath: z.string().m
 export const diagnosticsProbeFileOutputSchema = z.enum(['present', 'absent', 'unknown'])
 
 export type Settings = z.infer<typeof settingsSchema>
+export type ShortcutsConfig = z.infer<typeof shortcutsSchema>
+export type ShortcutFailure = z.infer<typeof shortcutFailureSchema>
+export type ShortcutsResult = z.infer<typeof shortcutsResultSchema>
+export type ShortcutActionEvent = z.infer<typeof shortcutActionEventSchema>
+export type RecentRecording = z.infer<typeof recentRecordingSchema>
 export type GetSourcesInput = z.infer<typeof getSourcesInputSchema>
 export type GetSourcesOutput = z.infer<typeof getSourcesOutputSchema>
 export type GetDisplaysInput = z.infer<typeof getDisplaysInputSchema>

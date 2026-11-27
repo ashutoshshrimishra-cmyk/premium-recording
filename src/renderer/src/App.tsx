@@ -6,11 +6,14 @@ import { ResolutionFpsPicker } from './app/ResolutionFpsPicker'
 import { AudioSelect } from './app/AudioSelect'
 import { NoiseToggle } from './app/NoiseToggle'
 import { SaveLocation } from './app/SaveLocation'
+import { SettingsView } from './app/SettingsView'
+import { RecentRecordings } from './app/RecentRecordings'
 import { StartButton } from './app/StartButton'
 import { useRecorderStore } from './app/store'
 
 const App = memo(function App(): React.JSX.Element {
   const loadSettings = useRecorderStore((state) => state.loadSettings)
+  const view = useRecorderStore((state) => state.view)
 
   useEffect(() => {
     void loadSettings()
@@ -20,7 +23,11 @@ const App = memo(function App(): React.JSX.Element {
     <main className="h-full bg-[var(--background)] text-[var(--text)]">
       <div className="flex h-full w-full flex-col px-8 py-5">
         <Header />
-        <div className="mt-5 grid min-h-0 flex-1 grid-cols-[minmax(240px,320px)_1fr] gap-5">
+        {view === 'settings' && <SettingsView />}
+        {/* Stays mounted while Settings is open, so a running recording is not interrupted. */}
+        <div
+          className={`mt-5 min-h-0 flex-1 grid-cols-[minmax(240px,320px)_1fr] gap-5 ${view === 'settings' ? 'hidden' : 'grid'}`}
+        >
           <section className="flex min-h-0 flex-col gap-4">
             <CaptureModePicker />
             <SourceList />
@@ -32,6 +39,7 @@ const App = memo(function App(): React.JSX.Element {
             <div className="my-4 h-px bg-[var(--border)]" />
             <NoiseToggle />
             <div className="mt-auto">
+              <RecentRecordings />
               <SaveLocation />
               <StartButton />
             </div>

@@ -1,6 +1,10 @@
 import { memo } from 'react'
+import { Settings } from 'lucide-react'
+import { useRecorderStore } from './store'
 
 export const Header = memo(function Header() {
+  const view = useRecorderStore((state) => state.view)
+  const setView = useRecorderStore((state) => state.setView)
   return (
     <header className="flex h-9 items-center gap-2.5">
       <svg className="size-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
@@ -19,6 +23,18 @@ export const Header = memo(function Header() {
       <span className="ml-auto text-[11px] text-[var(--muted)]" title={`Built ${__BUILD_TIME__}`}>
         v{__APP_VERSION__} ({__BUILD_COMMIT__}) · {__BUILD_TIME__.slice(0, 16).replace('T', ' ')}
       </span>
+      <button
+        type="button"
+        onClick={() => setView(view === 'settings' ? 'main' : 'settings')}
+        title={view === 'settings' ? 'Back to recording' : 'Settings'}
+        aria-label={view === 'settings' ? 'Back to recording' : 'Open settings'}
+        aria-pressed={view === 'settings'}
+        className={`flex size-8 items-center justify-center rounded-lg border ${
+          view === 'settings' ? 'border-[var(--accent)]' : 'border-[var(--border)]'
+        }`}
+      >
+        <Settings className="size-4" aria-hidden="true" />
+      </button>
     </header>
   )
 })

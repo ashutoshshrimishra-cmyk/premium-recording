@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { Settings } from '../../../shared/ipc-schemas'
+import type { RecentRecording, Settings } from '../../../shared/ipc-schemas'
+import { DEFAULT_SHORTCUTS } from '../../../shared/shortcuts'
 import type { RegionFraction } from '../recorder/cropMath'
 
 export type CaptureMode = 'screen' | 'window' | 'region'
@@ -14,6 +15,13 @@ interface RecorderState {
   audioDeviceId: string
   noiseSuppression: boolean
   saveDir: string
+  countdownSeconds: Settings['countdownSeconds']
+  openFolderAfterSave: boolean
+  cursorEffect: boolean
+  annotationStartsActive: boolean
+  shortcuts: Settings['shortcuts']
+  recent: RecentRecording[]
+  view: 'main' | 'settings'
   loaded: boolean
   setCaptureMode: (captureMode: CaptureMode) => void
   setSelectedSourceId: (selectedSourceId: string) => void
@@ -23,6 +31,17 @@ interface RecorderState {
   setAudioDeviceId: (audioDeviceId: string) => void
   setNoiseSuppression: (noiseSuppression: boolean) => void
   setSaveDir: (saveDir: string) => void
+  setBehaviour: (
+    patch: Partial<
+      Pick<
+        Settings,
+        'countdownSeconds' | 'openFolderAfterSave' | 'cursorEffect' | 'annotationStartsActive'
+      >
+    >
+  ) => void
+  setShortcuts: (shortcuts: Settings['shortcuts']) => void
+  setRecent: (recent: RecentRecording[]) => void
+  setView: (view: 'main' | 'settings') => void
   loadSettings: () => Promise<void>
 }
 
@@ -38,7 +57,12 @@ function debounceSettings(state: RecorderState): void {
       fps: state.fps,
       resolution: state.resolution,
       noiseSuppression: state.noiseSuppression,
-      audioDeviceId: state.audioDeviceId
+      audioDeviceId: state.audioDeviceId,
+      countdownSeconds: state.countdownSeconds,
+      openFolderAfterSave: state.openFolderAfterSave,
+      cursorEffect: state.cursorEffect,
+      annotationStartsActive: state.annotationStartsActive,
+      shortcuts: state.shortcuts
     }
     void window.api.setSettings(settings)
   }, 300)
@@ -53,6 +77,13 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
   audioDeviceId: 'default',
   noiseSuppression: true,
   saveDir: '',
+  countdownSeconds: 3,
+  openFolderAfterSave: false,
+  cursorEffect: true,
+  annotationStartsActive: true,
+  shortcuts: { ...DEFAULT_SHORTCUTS },
+  recent: [],
+  view: 'main',
   loaded: false,
   setCaptureMode: (captureMode) =>
     set((state) =>
@@ -85,6 +116,13 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
     set({ audioDeviceId })
     debounceSettings(get())
   },
+  setBehaviour: (patch) => {
+    set(patch)
+    debounceSettings(get())
+  },
+  setShortcuts: (shortcuts) => set({ shortcuts }),
+  setRecent: (recent) => set({ recent }),
+  setView: (view) => set({ view }),
   loadSettings: async () => {
     const settings = await window.api.getSettings()
     set({ ...settings, audioDeviceId: settings.audioDeviceId ?? 'default', loaded: true })
