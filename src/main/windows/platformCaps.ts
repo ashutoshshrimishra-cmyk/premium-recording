@@ -21,10 +21,7 @@ export function parseWindowsBuild(release: string): number | null {
  * setContentProtection paints a black box, so protection stays off and the panel is simply visible.
  * Unparsable releases and other platforms assume exclusion works.
  */
-export function captureExclusionMode(
-  platform: string,
-  release: string
-): CaptureExclusionMode {
+export function captureExclusionMode(platform: string, release: string): CaptureExclusionMode {
   if (platform !== 'win32') return 'exclude'
   const build = parseWindowsBuild(release)
   if (build === null) return 'exclude'
