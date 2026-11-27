@@ -44,7 +44,8 @@ export async function openMicrophoneWithFallback<T>(
       return { microphone: await open(), videoOnly: false }
     } catch (error) {
       const choice = await askUser(classifyMicFailure(error))
-      if (choice === 'cancel' || isCancelled()) throw new Error('Recording was cancelled', { cause: error })
+      if (choice === 'cancel' || isCancelled())
+        throw new Error('Recording was cancelled', { cause: error })
       if (choice === 'video-only') return { videoOnly: true }
     }
   }
