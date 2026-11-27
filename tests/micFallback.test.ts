@@ -3,7 +3,8 @@ import {
   chunkWriteFailureMessage,
   classifyMicFailure,
   openMicrophoneWithFallback,
-  shouldDiscardOnWriteError
+  closeRecordingFile,
+  RecordingCancelledError
 } from '../src/renderer/src/recorder/micFallback'
 
 const named = (name: string): Error => Object.assign(new Error('x'), { name })
@@ -62,7 +63,7 @@ describe('openMicrophoneWithFallback', () => {
         async () => 'cancel',
         () => false
       )
-    ).rejects.toThrow('Recording was cancelled')
+    ).rejects.toBeInstanceOf(RecordingCancelledError)
   })
 
   it('throws when cancelled while the prompt was open', async () => {
@@ -78,8 +79,35 @@ describe('openMicrophoneWithFallback', () => {
 })
 
 describe('chunk write failure handling', () => {
-  it('keeps the data', () => {
-    expect(shouldDiscardOnWriteError()).toBe(false)
+  it('never requests a discard when closing after a chunk error', async () => {
+    const stop = vi.fn().mockResolvedValue({ filePath: 'C:\\a.webm' })
+    const outcome = await closeRecordingFile(stop, new Error('disk full'))
+    expect(stop).toHaveBeenCalledWith({ discard: false })
+    expect(outcome).toMatchObject({ kind: 'error', keptAtPath: true })
+    expect(outcome.kind === 'error' && outcome.message).toContain('C:\\a.webm')
+  })
+
+  it('keeps the kept path when stop also fails', async () => {
+    const stop = vi
+      .fn()
+      .mockRejectedValue(new Error('Link failed. The partial recording was kept at C:\\b.part'))
+    const outcome = await closeRecordingFile(stop, new Error('disk full'))
+    expect(outcome.kind === 'error' && outcome.message).toContain('Chunk write failed: disk full')
+    expect(outcome.kind === 'error' && outcome.message).toContain('C:\\b.part')
+  })
+
+  it('falls back to a generic note when the stop error has no path', async () => {
+    const stop = vi.fn().mockRejectedValue(new Error('boom'))
+    const outcome = await closeRecordingFile(stop, new Error('disk full'))
+    expect(outcome).toMatchObject({ kind: 'error', keptAtPath: false })
+  })
+
+  it('returns the saved path without a chunk error', async () => {
+    const stop = vi.fn().mockResolvedValue({ filePath: 'C:\\ok.webm' })
+    expect(await closeRecordingFile(stop, undefined)).toEqual({
+      kind: 'saved',
+      filePath: 'C:\\ok.webm'
+    })
   })
 
   it('reports the failure and saved path', () => {

@@ -8,6 +8,7 @@ const fileName = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? 
 
 export const RecoveryBanner = memo(function RecoveryBanner() {
   const saveDir = useRecorderStore((state) => state.saveDir)
+  const recoveryRevision = useRecorderStore((state) => state.recoveryRevision)
   const [parts, setParts] = useState<AbandonedPart[]>([])
   const [message, setMessage] = useState('')
 
@@ -21,7 +22,7 @@ export const RecoveryBanner = memo(function RecoveryBanner() {
 
   useEffect(() => {
     void refresh()
-  }, [refresh, saveDir])
+  }, [refresh, saveDir, recoveryRevision])
 
   const run = async (action: () => Promise<string>): Promise<void> => {
     try {

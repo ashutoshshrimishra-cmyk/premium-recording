@@ -21,6 +21,7 @@ interface RecorderState {
   annotationStartsActive: boolean
   shortcuts: Settings['shortcuts']
   recent: RecentRecording[]
+  recoveryRevision: number
   view: 'main' | 'settings'
   loaded: boolean
   setCaptureMode: (captureMode: CaptureMode) => void
@@ -41,6 +42,7 @@ interface RecorderState {
   ) => void
   setShortcuts: (shortcuts: Settings['shortcuts']) => void
   setRecent: (recent: RecentRecording[]) => void
+  bumpRecoveryRevision: () => void
   setView: (view: 'main' | 'settings') => void
   loadSettings: () => Promise<void>
 }
@@ -83,6 +85,7 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
   annotationStartsActive: true,
   shortcuts: { ...DEFAULT_SHORTCUTS },
   recent: [],
+  recoveryRevision: 0,
   view: 'main',
   loaded: false,
   setCaptureMode: (captureMode) =>
@@ -122,6 +125,7 @@ export const useRecorderStore = create<RecorderState>((set, get) => ({
   },
   setShortcuts: (shortcuts) => set({ shortcuts }),
   setRecent: (recent) => set({ recent }),
+  bumpRecoveryRevision: () => set((state) => ({ recoveryRevision: state.recoveryRevision + 1 })),
   setView: (view) => set({ view }),
   loadSettings: async () => {
     const settings = await window.api.getSettings()

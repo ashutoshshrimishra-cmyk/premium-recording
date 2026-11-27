@@ -53,7 +53,22 @@ function createWindow(): void {
   }
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  // Another instance owns the save folder and any active .part file.
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const [window] = BrowserWindow.getAllWindows()
+    if (!window) return
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  })
+}
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return
   log(
     'info',
     `Startup v${app.getVersion()} (${BUILD_COMMIT}) built ${BUILD_TIME || 'n/a'} | electron ${process.versions.electron} chrome ${process.versions.chrome} | ${process.platform} ${process.getSystemVersion()} | log ${getLogPath()}`

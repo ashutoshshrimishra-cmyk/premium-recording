@@ -5,7 +5,7 @@ import { ScreenRecorder } from '../recorder/recorder'
 import { formatDiagnostics, type RecordingDiagnostics } from '../recorder/diagnostics'
 import { runCountdown } from '../recorder/countdown'
 import { showShortcut } from './platform'
-import type { MicChoice, MicFailure } from '../recorder/micFallback'
+import { RecordingCancelledError, type MicChoice, type MicFailure } from '../recorder/micFallback'
 
 type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -124,6 +124,7 @@ export const StartButton = memo(function StartButton() {
         recorderRef.current = undefined
         statusRef.current = 'idle'
         setStatus('idle')
+        useRecorderStore.getState().bumpRecoveryRevision()
       }
     })
     recorderRef.current = recorder
@@ -151,6 +152,7 @@ export const StartButton = memo(function StartButton() {
       recorderRef.current = undefined
       statusRef.current = 'idle'
       setStatus('idle')
+      if (error instanceof RecordingCancelledError) return
       setMessage(error instanceof Error ? error.message : 'Recording could not start')
     }
   }

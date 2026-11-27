@@ -1,9 +1,8 @@
 import { RecordingChunkWriter } from './chunkWriter'
 import { openMicrophone, type MicrophoneChain } from './microphone'
 import {
-  chunkWriteFailureMessage,
+  closeRecordingFile,
   openMicrophoneWithFallback,
-  shouldDiscardOnWriteError,
   type MicChoice,
   type MicFailure
 } from './micFallback'
@@ -521,26 +520,16 @@ export class ScreenRecorder {
     }
 
     if (this.fileStarted && this.sessionId) {
-      try {
-        const result = await window.api.recordingStop({
-          sessionId: this.sessionId,
-          mimeType,
-          discard: chunkWriteError ? shouldDiscardOnWriteError() : false
-        })
-        if (chunkWriteError) {
-          this.callbacks.onError(chunkWriteFailureMessage(chunkWriteError, result.filePath))
-        } else {
-          this.callbacks.onFile(result.filePath)
-          await this.verifySavedFile(result.filePath)
-        }
-      } catch (error) {
-        this.callbacks.onError(
-          chunkWriteError
-            ? chunkWriteFailureMessage(chunkWriteError)
-            : error instanceof Error
-              ? error.message
-              : 'Could not close the recording'
-        )
+      const sessionId = this.sessionId
+      const outcome = await closeRecordingFile(
+        (args) => window.api.recordingStop({ sessionId, mimeType, ...args }),
+        chunkWriteError
+      )
+      if (outcome.kind === 'saved') {
+        this.callbacks.onFile(outcome.filePath)
+        await this.verifySavedFile(outcome.filePath)
+      } else {
+        this.callbacks.onError(outcome.message)
       }
     }
     this.cleanup()
