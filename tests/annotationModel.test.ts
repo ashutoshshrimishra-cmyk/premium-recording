@@ -9,7 +9,15 @@ import {
   translateAnnotation
 } from '../src/renderer/src/overlay/annotationModel'
 
-const line = { tool: 'line' as const, color: '#f00', width: 4, points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] }
+const line = {
+  tool: 'line' as const,
+  color: '#f00',
+  width: 4,
+  points: [
+    { x: 0, y: 0 },
+    { x: 100, y: 0 }
+  ]
+}
 
 describe('AnnotationStore', () => {
   it('adds, undoes and redoes', () => {
@@ -25,7 +33,13 @@ describe('AnnotationStore', () => {
   it('erases only the stroke under the cursor', () => {
     const s = new AnnotationStore()
     s.add(line)
-    s.add({ ...line, points: [{ x: 0, y: 50 }, { x: 100, y: 50 }] })
+    s.add({
+      ...line,
+      points: [
+        { x: 0, y: 50 },
+        { x: 100, y: 50 }
+      ]
+    })
     expect(s.eraseAt({ x: 50, y: 2 })).toBe(true)
     expect(s.items).toHaveLength(1)
     expect(s.eraseAt({ x: 500, y: 500 })).toBe(false)

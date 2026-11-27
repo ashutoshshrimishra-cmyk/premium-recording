@@ -13,9 +13,7 @@ export const SaveLocation = memo(function SaveLocation() {
 
   return (
     <div className="mb-3">
-      <label className="mb-2 block text-xs font-medium text-[var(--muted)]">
-        Save to
-      </label>
+      <label className="mb-2 block text-xs font-medium text-[var(--muted)]">Save to</label>
       <button
         type="button"
         onClick={() => void pickFolder()}
