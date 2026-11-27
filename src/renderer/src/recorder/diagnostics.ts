@@ -30,6 +30,7 @@ export interface RecordingDiagnostics {
   }
   overlay: { canvas: string; panel: string; error: string }
   build: { version: string; commit: string }
+  capture: { windowsBuild: number | null; mode: string }
 }
 
 export function createEmptyDiagnostics(build: RecordingDiagnostics['build']): RecordingDiagnostics {
@@ -59,7 +60,8 @@ export function createEmptyDiagnostics(build: RecordingDiagnostics['build']): Re
       fileHasAudio: 'pending'
     },
     overlay: { canvas: '', panel: '', error: '' },
-    build
+    build,
+    capture: { windowsBuild: null, mode: '' }
   }
 }
 
@@ -77,6 +79,11 @@ export function formatDiagnostics(d: RecordingDiagnostics): string[] {
     )
     lines.push(
       `Bitrate: ${(v.bitrate / 1_000_000).toFixed(1)} Mbps, format: ${v.mime || 'n/a'}, hint: ${v.contentHint || 'none'}`
+    )
+  }
+  if (d.capture.mode) {
+    lines.push(
+      `${d.capture.windowsBuild === null ? 'OS' : `Windows build ${d.capture.windowsBuild}`}, panel capture: ${d.capture.mode}`
     )
   }
   const a = d.audio

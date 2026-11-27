@@ -193,7 +193,9 @@ export const diagnosticsGetInfoOutputSchema = z.object({
   version: z.string(),
   commit: z.string(),
   platform: z.string(),
-  osRelease: z.string()
+  osRelease: z.string(),
+  windowsBuild: z.number().int().nullable(),
+  captureMode: z.enum(['exclude', 'include-unprotected'])
 })
 export const diagnosticsShowLogInputSchema = z.void()
 export const diagnosticsShowLogOutputSchema = z.boolean()

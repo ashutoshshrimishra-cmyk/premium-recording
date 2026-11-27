@@ -28,12 +28,14 @@ export const StartButton = memo(function StartButton() {
   const [warnings, setWarnings] = useState<string[]>([])
   const [diagnostics, setDiagnostics] = useState<RecordingDiagnostics | undefined>(undefined)
   const [logPath, setLogPath] = useState('')
+  const [panelInVideo, setPanelInVideo] = useState(false)
 
   useEffect(() => {
     void window.api
       .diagnosticsGetInfo()
       .then((info) => {
         setLogPath(info.logPath)
+        setPanelInVideo(info.captureMode === 'include-unprotected')
         void window.api.diagnosticsLog(
           `Renderer ready: v${__APP_VERSION__} (${__BUILD_COMMIT__}) built ${__BUILD_TIME__} | ${info.platform} ${info.osRelease}`
         )
@@ -181,6 +183,12 @@ export const StartButton = memo(function StartButton() {
             <li key={warning}>{warning}</li>
           ))}
         </ul>
+      )}
+      {panelInVideo && (
+        <p className="mb-2 text-[11px] text-[var(--muted)]">
+          This Windows version cannot hide the annotation panel from screen capture, so the panel
+          appears in the video instead of a black box.
+        </p>
       )}
       {diagnostics && (
         <div className="mb-2 rounded-lg border border-[var(--border)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--muted)]">

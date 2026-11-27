@@ -5,6 +5,8 @@ import icon from '../../resources/icon.png?asset'
 import { registerIpc } from './ipc'
 import { getLogPath, log } from './logger'
 import { BUILD_COMMIT, BUILD_TIME } from './buildInfo'
+import { release } from 'node:os'
+import { captureExclusionMode, describeCaptureMode } from './windows/platformCaps'
 import { discardActiveRecording, getSelectedSourceId, setSelectedSourceId } from './recording'
 import {
   closeAnnotationOverlay,
@@ -57,6 +59,10 @@ app.whenReady().then(() => {
   log(
     'info',
     `Startup v${app.getVersion()} (${BUILD_COMMIT}) built ${BUILD_TIME || 'n/a'} | electron ${process.versions.electron} chrome ${process.versions.chrome} | ${process.platform} ${process.getSystemVersion()} | log ${getLogPath()}`
+  )
+  log(
+    'info',
+    `Capture: ${describeCaptureMode(process.platform, release(), captureExclusionMode(process.platform, release()))}`
   )
   try {
     log('info', `GPU feature status: ${JSON.stringify(app.getGPUFeatureStatus())}`)

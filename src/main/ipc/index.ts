@@ -8,6 +8,7 @@ import {
   shell,
   type IpcMainInvokeEvent
 } from 'electron'
+import { captureExclusionMode, parseWindowsBuild } from '../windows/platformCaps'
 import { randomUUID } from 'node:crypto'
 import { open } from 'node:fs/promises'
 import { release } from 'node:os'
@@ -428,7 +429,9 @@ export function registerIpc(): void {
       version: app.getVersion(),
       commit: BUILD_COMMIT,
       platform: process.platform,
-      osRelease: release()
+      osRelease: release(),
+      windowsBuild: process.platform === 'win32' ? parseWindowsBuild(release()) : null,
+      captureMode: captureExclusionMode(process.platform, release())
     })
   })
 

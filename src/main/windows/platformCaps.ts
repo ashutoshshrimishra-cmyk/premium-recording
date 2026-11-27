@@ -13,3 +13,39 @@ export function supportsCaptureExclusion(platform: string, release: string): boo
   if (major > 10) return true
   return major === 10 && build >= MIN_CAPTURE_EXCLUSION_BUILD
 }
+
+export type CaptureExclusionMode = 'exclude' | 'include-unprotected'
+
+/** Extracts the Windows build number from os.release(), for example 19045 from "10.0.19045". */
+export function parseWindowsBuild(release: string): number | null {
+  const parts = release.split('.')
+  if (parts.length < 3) return null
+  const build = Number.parseInt(parts[2], 10)
+  return Number.isFinite(build) && build >= 0 ? build : null
+}
+
+/**
+ * Decides how the annotation panel is treated by screen capture. On old Windows builds
+ * setContentProtection paints a black box, so protection stays off and the panel is simply visible.
+ * Unparsable releases and other platforms assume exclusion works.
+ */
+export function captureExclusionMode(
+  platform: string,
+  release: string,
+  userIncludePanel = false
+): CaptureExclusionMode {
+  if (userIncludePanel) return 'include-unprotected'
+  if (platform !== 'win32') return 'exclude'
+  const build = parseWindowsBuild(release)
+  if (build === null) return 'exclude'
+  return build >= MIN_CAPTURE_EXCLUSION_BUILD ? 'exclude' : 'include-unprotected'
+}
+
+export function describeCaptureMode(
+  platform: string,
+  release: string,
+  mode: CaptureExclusionMode
+): string {
+  const build = platform === 'win32' ? parseWindowsBuild(release) : null
+  return `${build === null ? `${platform} ${release}` : `Windows build ${build}`}, panel capture: ${mode}`
+}

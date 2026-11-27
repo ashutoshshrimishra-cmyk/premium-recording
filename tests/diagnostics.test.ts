@@ -37,3 +37,13 @@ describe('formatDiagnostics', () => {
     expect(lines.join('\n')).not.toContain('Saved file')
   })
 })
+
+describe('formatDiagnostics capture mode', () => {
+  it('shows the Windows build and capture mode', () => {
+    const d = createEmptyDiagnostics({ version: '1.2.0', commit: 'dev' })
+    d.capture = { windowsBuild: 17763, mode: 'include-unprotected' }
+    expect(formatDiagnostics(d).join('\n')).toContain(
+      'Windows build 17763, panel capture: include-unprotected'
+    )
+  })
+})

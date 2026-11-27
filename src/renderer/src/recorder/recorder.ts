@@ -86,6 +86,12 @@ export class ScreenRecorder {
     this.diagnostics.video.requestedH = options.height
     this.diagnostics.video.requestedFps = options.fps
     this.diagnostics.audio.requested = options.audioDeviceId !== 'none'
+    try {
+      const info = await window.api.diagnosticsGetInfo()
+      this.diagnostics.capture = { windowsBuild: info.windowsBuild, mode: info.captureMode }
+    } catch {
+      // Diagnostics only, recording continues without the capture mode.
+    }
     this.callbacks.onStatus('starting')
     this.log(
       `Recording requested: v${__APP_VERSION__} (${__BUILD_COMMIT__}) ${options.width}x${options.height}@${options.fps} audio=${options.audioDeviceId} denoise=${options.noiseSuppression}`
@@ -336,7 +342,12 @@ export class ScreenRecorder {
       d.audio.muted = this.micMuted || !mic.track.enabled || mic.track.muted
     }
     d.video.actualFps = this.lastRealFps || d.video.actualFps
-    this.callbacks.onDiagnostics?.({ ...d, video: { ...d.video }, audio: { ...d.audio } })
+    this.callbacks.onDiagnostics?.({
+      ...d,
+      video: { ...d.video },
+      audio: { ...d.audio },
+      capture: { ...d.capture }
+    })
   }
 
   private applyOverlayStatus(overlay: { canvas: boolean; toolbar: boolean; error?: string }): void {
