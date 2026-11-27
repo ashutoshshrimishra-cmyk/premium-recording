@@ -21,13 +21,15 @@ import {
 
 describe('IPC schemas', () => {
   it('accepts valid get-sources input and output', () => {
-    expect(getSourcesInputSchema.safeParse(undefined).success).toBe(true)
+    expect(getSourcesInputSchema.safeParse({ kind: 'screen' }).success).toBe(true)
     expect(
       getSourcesOutputSchema.safeParse([
         {
           id: 'screen:0:0',
           name: 'Entire Screen',
           displayId: '123',
+          kind: 'screen',
+          label: 'Display 1 (1920x1080) - Primary',
           thumbnail: 'data:image/png;base64,AAAA'
         }
       ]).success

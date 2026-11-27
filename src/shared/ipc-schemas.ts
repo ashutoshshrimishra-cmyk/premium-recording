@@ -8,12 +8,22 @@ export const settingsSchema = z.object({
   audioDeviceId: z.string().min(1).optional()
 })
 
-export const getSourcesInputSchema = z.void()
+export const getSourcesInputSchema = z.object({ kind: z.enum(['screen', 'window']) })
 export const getSourcesOutputSchema = z.array(
   z.object({
     id: z.string().min(1),
     name: z.string(),
     displayId: z.string(),
+    kind: z.enum(['screen', 'window']),
+    label: z.string(),
+    bounds: z
+      .object({
+        x: z.number(),
+        y: z.number(),
+        width: z.number().nonnegative(),
+        height: z.number().nonnegative()
+      })
+      .optional(),
     thumbnail: z.string().startsWith('data:')
   })
 )
@@ -42,12 +52,12 @@ export const setSettingsInputSchema = settingsSchema
 export const setSettingsOutputSchema = settingsSchema
 
 export const recordingSelectSourceInputSchema = z.object({
-  sourceId: z.string().regex(/^screen:/)
+  sourceId: z.string().regex(/^(screen|window):/)
 })
 export const recordingSelectSourceOutputSchema = z.boolean()
 
 export const recordingStartInputSchema = z.object({
-  sourceId: z.string().regex(/^screen:/),
+  sourceId: z.string().regex(/^(screen|window):/),
   mimeType: z.string().min(1),
   fps: z.number().int().min(1).max(60),
   width: z.number().int().positive(),

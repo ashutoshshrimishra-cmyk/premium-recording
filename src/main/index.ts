@@ -98,12 +98,13 @@ app.whenReady().then(() => {
           return
         }
         const sources = await desktopCapturer.getSources({
-          types: ['screen'],
+          types: ['screen', 'window'],
           thumbnailSize: { width: 1, height: 1 },
           fetchWindowIcons: false
         })
         const source = sources.find((item) => item.id === sourceId)
         setSelectedSourceId('')
+        if (!source) log('error', `Capture source ${sourceId} is no longer available`)
         callback(source ? { video: source } : {})
       } catch (error) {
         setSelectedSourceId('')

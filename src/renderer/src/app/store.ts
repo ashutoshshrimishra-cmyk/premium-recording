@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Settings } from '../../../shared/ipc-schemas'
+import type { RegionFraction } from '../recorder/cropMath'
 
 export type CaptureMode = 'screen' | 'window' | 'region'
 export type Resolution = Settings['resolution']
@@ -7,6 +8,7 @@ export type Resolution = Settings['resolution']
 interface RecorderState {
   captureMode: CaptureMode
   selectedSourceId: string
+  region: RegionFraction | undefined
   resolution: Resolution
   fps: number
   audioDeviceId: string
@@ -15,6 +17,7 @@ interface RecorderState {
   loaded: boolean
   setCaptureMode: (captureMode: CaptureMode) => void
   setSelectedSourceId: (selectedSourceId: string) => void
+  setRegion: (region: RegionFraction | undefined) => void
   setResolution: (resolution: Resolution) => void
   setFps: (fps: number) => void
   setAudioDeviceId: (audioDeviceId: string) => void
@@ -44,14 +47,24 @@ function debounceSettings(state: RecorderState): void {
 export const useRecorderStore = create<RecorderState>((set, get) => ({
   captureMode: 'screen',
   selectedSourceId: '',
+  region: undefined,
   resolution: '1080p',
   fps: 30,
   audioDeviceId: 'default',
   noiseSuppression: true,
   saveDir: '',
   loaded: false,
-  setCaptureMode: (captureMode) => set({ captureMode }),
-  setSelectedSourceId: (selectedSourceId) => set({ selectedSourceId }),
+  setCaptureMode: (captureMode) =>
+    set((state) =>
+      state.captureMode === captureMode
+        ? state
+        : { captureMode, selectedSourceId: '', region: undefined }
+    ),
+  setSelectedSourceId: (selectedSourceId) =>
+    set((state) =>
+      state.selectedSourceId === selectedSourceId ? state : { selectedSourceId, region: undefined }
+    ),
+  setRegion: (region) => set({ region }),
   setResolution: (resolution) => {
     set({ resolution })
     debounceSettings(get())

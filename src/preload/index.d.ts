@@ -1,5 +1,6 @@
 import type {
   GetDisplaysOutput,
+  GetSourcesInput,
   GetSourcesOutput,
   PickFolderOutput,
   Settings,
@@ -27,7 +28,7 @@ import type {
 } from '../shared/ipc-schemas'
 
 interface RecorderApi {
-  getSources(): Promise<GetSourcesOutput>
+  getSources(input: GetSourcesInput): Promise<GetSourcesOutput>
   getDisplays(): Promise<GetDisplaysOutput>
   pickFolder(): Promise<PickFolderOutput>
   getSettings(): Promise<Settings>

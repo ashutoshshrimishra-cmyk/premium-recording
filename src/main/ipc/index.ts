@@ -8,6 +8,7 @@ import {
   shell,
   type IpcMainInvokeEvent
 } from 'electron'
+import { displayLabel, matchDisplay, sortDisplays, sourceKindOf } from '../../shared/sourceId'
 import { captureExclusionMode, parseWindowsBuild } from '../windows/platformCaps'
 import { randomUUID } from 'node:crypto'
 import { open } from 'node:fs/promises'
@@ -137,17 +138,50 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.getSources, async (event, input: unknown) => {
     validateSender(event)
-    getSourcesInputSchema.parse(input)
+    const { kind } = getSourcesInputSchema.parse(input)
     const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 320, height: 180 },
+      types: [kind],
+      thumbnailSize: kind === 'screen' ? { width: 320, height: 180 } : { width: 320, height: 200 },
       fetchWindowIcons: false
     })
+    if (kind === 'window') {
+      return getSourcesOutputSchema.parse(
+        sources
+          .filter((source) => source.name.trim().length > 0 && !source.thumbnail.isEmpty())
+          .map((source) => ({
+            id: source.id,
+            name: source.name,
+            displayId: source.display_id,
+            kind,
+            label: source.name,
+            thumbnail: source.thumbnail.toDataURL()
+          }))
+      )
+    }
+    const displays = screen.getAllDisplays()
+    const primaryId = screen.getPrimaryDisplay().id
+    const ordered = sortDisplays(displays, primaryId)
+    const entries = sources.map((source) => {
+      const display = matchDisplay(source.display_id, source.id, displays)
+      const position = display ? ordered.findIndex((item) => item.id === display.id) + 1 : 0
+      return { source, display, position }
+    })
+    entries.sort((a, b) => (a.position || 99) - (b.position || 99))
     return getSourcesOutputSchema.parse(
-      sources.map((source) => ({
+      entries.map(({ source, display, position }) => ({
         id: source.id,
         name: source.name,
-        displayId: source.display_id,
+        displayId: source.display_id || (display ? String(display.id) : ''),
+        kind,
+        label: display
+          ? displayLabel(
+              position,
+              display.bounds.width * display.scaleFactor,
+              display.bounds.height * display.scaleFactor,
+              display.id === primaryId
+            )
+          : source.name,
+        bounds: display ? { ...display.bounds } : undefined,
         thumbnail: source.thumbnail.toDataURL()
       }))
     )
@@ -242,13 +276,16 @@ export function registerIpc(): void {
     let fileStarted = false
     try {
       const sources = await desktopCapturer.getSources({
-        types: ['screen'],
+        types: ['screen', 'window'],
         thumbnailSize: { width: 1, height: 1 },
         fetchWindowIcons: false
       })
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
       const source = sources.find((candidate) => candidate.id === recording.sourceId)
-      if (!source) throw new Error('The selected screen is no longer available')
+      if (!source)
+        throw new Error(
+          'The selected screen or window is no longer available. Refresh the list and select it again.'
+        )
 
       const filePath = await startRecordingFile(recording.saveDir, new Date(), recording.mimeType)
       fileStarted = true
@@ -259,7 +296,8 @@ export function registerIpc(): void {
         source.display_id,
         source.id,
         owner,
-        recording.saveDir
+        recording.saveDir,
+        sourceKindOf(source.id) !== 'window'
       )
       if (activeSession?.id !== sessionId) throw new Error('Recording startup was cancelled')
       if (overlay.toolbar) {

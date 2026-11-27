@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import type {
   GetDisplaysOutput,
+  GetSourcesInput,
   GetSourcesOutput,
   PickFolderOutput,
   Settings,
@@ -29,8 +30,8 @@ import type {
 } from '../shared/ipc-schemas'
 
 const api = {
-  getSources: (): Promise<GetSourcesOutput> =>
-    ipcRenderer.invoke(IPC_CHANNELS.getSources, undefined),
+  getSources: (input: GetSourcesInput): Promise<GetSourcesOutput> =>
+    ipcRenderer.invoke(IPC_CHANNELS.getSources, input),
   getDisplays: (): Promise<GetDisplaysOutput> =>
     ipcRenderer.invoke(IPC_CHANNELS.getDisplays, undefined),
   pickFolder: (): Promise<PickFolderOutput> =>

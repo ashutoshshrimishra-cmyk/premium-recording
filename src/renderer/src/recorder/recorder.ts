@@ -8,6 +8,8 @@ import {
   type ProbeOutcome
 } from './mimeSelect'
 import { computeBitrate } from './bitrate'
+import { fractionToPixels, type RegionFraction } from './cropMath'
+import { sourceKindOf } from '../../../shared/sourceId'
 import { detectAudioTrack } from '../../../shared/containerProbe'
 import { createEmptyDiagnostics, type RecordingDiagnostics } from './diagnostics'
 
@@ -60,6 +62,9 @@ export class ScreenRecorder {
   private denoiseActive = true
   private removeMicListener?: () => void
   private micStateTimer?: ReturnType<typeof setInterval>
+  private cropTimer?: ReturnType<typeof setInterval>
+  private cropVideo?: HTMLVideoElement
+  private cropSource?: MediaStream
 
   constructor(private callbacks: RecorderCallbacks) {}
 
@@ -71,6 +76,7 @@ export class ScreenRecorder {
     saveDir: string
     audioDeviceId: string
     noiseSuppression: boolean
+    region?: RegionFraction
   }): Promise<void> {
     this.stopped = false
     this.finishing = false
@@ -118,6 +124,16 @@ export class ScreenRecorder {
           : `Could not capture the screen: ${name} ${detail}`.trim(),
         { cause: error }
       )
+    }
+
+    if (options.region) {
+      try {
+        displayStream = await this.cropDisplayStream(displayStream, options.region, options.fps)
+      } catch (error) {
+        displayStream.getTracks().forEach((track) => track.stop())
+        this.disposeCrop()
+        throw error
+      }
     }
 
     this.stream = displayStream
@@ -210,7 +226,8 @@ export class ScreenRecorder {
       mime: mimeType,
       contentHint: videoTrack.contentHint
     }
-    if (width < options.width || height < options.height) {
+    const fullScreen = !options.region && sourceKindOf(options.sourceId) === 'screen'
+    if (fullScreen && (width < options.width || height < options.height)) {
       this.warn(
         `The screen delivered ${width}x${height}, below the requested ${options.width}x${options.height}.`
       )
@@ -517,6 +534,7 @@ export class ScreenRecorder {
   }
 
   private cleanup(): void {
+    this.disposeCrop()
     if (this.diagnosticsTimer) clearInterval(this.diagnosticsTimer)
     this.diagnosticsTimer = undefined
     if (this.micStateTimer) clearInterval(this.micStateTimer)
@@ -543,7 +561,80 @@ export class ScreenRecorder {
     this.fileStarted = false
   }
 
+  private disposeCrop(): void {
+    if (this.cropTimer) clearInterval(this.cropTimer)
+    this.cropTimer = undefined
+    this.cropSource?.getTracks().forEach((track) => track.stop())
+    this.cropSource = undefined
+    if (this.cropVideo) {
+      this.cropVideo.pause()
+      this.cropVideo.srcObject = null
+      this.cropVideo = undefined
+    }
+  }
+
+  /** Crops the captured screen to the chosen region by redrawing it onto a canvas stream. */
+  private async cropDisplayStream(
+    source: MediaStream,
+    region: RegionFraction,
+    fps: number
+  ): Promise<MediaStream> {
+    const video = document.createElement('video')
+    video.muted = true
+    video.srcObject = source
+    this.cropVideo = video
+    this.cropSource = source
+    await video.play()
+    if (video.videoWidth === 0) {
+      await new Promise<void>((resolve) => {
+        video.onloadedmetadata = (): void => resolve()
+        setTimeout(resolve, 2000)
+      })
+    }
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      throw new Error(
+        'The selected screen delivered no picture, so the region could not be cropped'
+      )
+    }
+    const crop = fractionToPixels(region, video.videoWidth, video.videoHeight)
+    const canvas = document.createElement('canvas')
+    canvas.width = crop.width
+    canvas.height = crop.height
+    const context = canvas.getContext('2d', { alpha: false })
+    if (!context) throw new Error('Could not prepare the region crop')
+    const draw = (): void => {
+      context.drawImage(
+        video,
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height,
+        0,
+        0,
+        crop.width,
+        crop.height
+      )
+    }
+    draw()
+    this.cropTimer = setInterval(draw, Math.max(8, Math.round(1000 / fps)))
+    const output = canvas.captureStream(fps)
+    const sourceTrack = source.getVideoTracks()[0]
+    if (sourceTrack) {
+      sourceTrack.onended = (): void => {
+        if (!this.stopped) {
+          this.callbacks.onError('Screen capture stream ended')
+          void this.stop()
+        }
+      }
+    }
+    this.log(
+      `Region crop ${crop.width}x${crop.height} at ${crop.x},${crop.y} of ${video.videoWidth}x${video.videoHeight}`
+    )
+    return output
+  }
+
   private stopTracks(): void {
+    this.disposeCrop()
     this.stream?.getTracks().forEach((track) => track.stop())
     this.mediaRecorder?.stream.getTracks().forEach((track) => track.stop())
     this.microphone?.dispose()

@@ -345,7 +345,8 @@ export async function openAnnotationOverlay(
   sourceDisplayId: string,
   sourceId: string,
   owner: WebContents,
-  saveDir: string
+  saveDir: string,
+  withCanvas = true
 ): Promise<OverlayOpenResult> {
   closeAnnotationOverlay()
 
@@ -368,7 +369,7 @@ export async function openAnnotationOverlay(
   const errors: string[] = []
 
   try {
-    await openCanvasWindow(display)
+    if (withCanvas) await openCanvasWindow(display)
   } catch (error) {
     log('error', 'Could not open the annotation canvas', error)
     errors.push(`canvas: ${error instanceof Error ? error.message : String(error)}`)

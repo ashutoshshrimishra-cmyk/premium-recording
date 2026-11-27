@@ -9,6 +9,7 @@ type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 export const StartButton = memo(function StartButton() {
   const captureMode = useRecorderStore((state) => state.captureMode)
   const sourceId = useRecorderStore((state) => state.selectedSourceId)
+  const region = useRecorderStore((state) => state.region)
   const fps = useRecorderStore((state) => state.fps)
   const resolution = useRecorderStore((state) => state.resolution)
   const saveDir = useRecorderStore((state) => state.saveDir)
@@ -112,7 +113,8 @@ export const StartButton = memo(function StartButton() {
         height,
         saveDir,
         audioDeviceId,
-        noiseSuppression
+        noiseSuppression,
+        region: captureMode === 'region' ? region : undefined
       })
       timerRef.current = setInterval(updateElapsed, 250)
       startingRef.current = false
@@ -128,7 +130,10 @@ export const StartButton = memo(function StartButton() {
   const stop = (): void => void recorderRef.current?.stop()
   const pause = (): void => recorderRef.current?.pause()
   const resume = (): void => recorderRef.current?.resume()
-  const enabled = captureMode === 'screen' && sourceId.startsWith('screen:') && saveDir.length > 0
+  const sourceMatchesMode =
+    captureMode === 'window' ? sourceId.startsWith('window:') : sourceId.startsWith('screen:')
+  const enabled =
+    sourceMatchesMode && saveDir.length > 0 && (captureMode !== 'region' || region !== undefined)
   const isActive = status !== 'idle'
   const micLevel = diagnostics
     ? Math.min(1, Math.max(diagnostics.audio.rawLevel, diagnostics.audio.processedLevel) * 2)
@@ -233,7 +238,11 @@ export const StartButton = memo(function StartButton() {
           className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--accent)] text-sm font-semibold text-white hover:bg-[var(--accent-hover)] disabled:bg-[var(--border)] disabled:text-[var(--muted)]"
         >
           <Circle className="size-4" aria-hidden="true" />
-          Start Screen Recording
+          {captureMode === 'window'
+            ? 'Start Window Recording'
+            : captureMode === 'region'
+              ? 'Start Region Recording'
+              : 'Start Screen Recording'}
         </button>
       ) : (
         <div className="grid grid-cols-3 gap-2">
