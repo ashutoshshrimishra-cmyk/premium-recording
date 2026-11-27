@@ -46,6 +46,35 @@ export function textBounds(a: Annotation): Rect {
   return { x: origin.x, y: origin.y, width, height: fontSize * TEXT_LINE_HEIGHT }
 }
 
+interface Extent {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+// Annotations are immutable (translateAnnotation returns a new object), so
+// the point extent can be cached per object.
+const extentCache = new WeakMap<Annotation, Extent>()
+
+function pointExtent(a: Annotation): Extent {
+  const cached = extentCache.get(a)
+  if (cached) return cached
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of a.points) {
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  const extent = { minX, minY, maxX, maxY }
+  extentCache.set(a, extent)
+  return extent
+}
+
 /** Bounding box of any annotation, used for the selection outline. */
 export function annotationBounds(a: Annotation): Rect {
   if (a.tool === 'text') return textBounds(a)
@@ -58,16 +87,15 @@ export function annotationBounds(a: Annotation): Rect {
       height: STAMP_SIZE
     }
   }
-  const xs = a.points.map((p) => p.x)
-  const ys = a.points.map((p) => p.y)
+  const e = pointExtent(a)
   const pad = a.width / 2
-  const minX = Math.min(...xs) - pad
-  const minY = Math.min(...ys) - pad
+  const minX = e.minX - pad
+  const minY = e.minY - pad
   return {
     x: minX,
     y: minY,
-    width: Math.max(...xs) + pad - minX,
-    height: Math.max(...ys) + pad - minY
+    width: e.maxX + pad - minX,
+    height: e.maxY + pad - minY
   }
 }
 
@@ -76,52 +104,35 @@ export function translateAnnotation(a: Annotation, dx: number, dy: number): Anno
   return { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
 }
 
-function distToSegment(p: Point, a: Point, b: Point): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
+function distToSegmentXY(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const dx = bx - ax
+  const dy = by - ay
   const len2 = dx * dx + dy * dy
-  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y)
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2
+  if (len2 === 0) return Math.hypot(px - ax, py - ay)
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2
   t = Math.max(0, Math.min(1, t))
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 }
 
-function outlineSegments(a: Annotation): [Point, Point][] {
-  const pts = a.points
-  if (a.tool === 'text' || a.tool === 'stamp') return []
-  if (a.tool === 'pen') {
-    if (pts.length === 1) return [[pts[0], pts[0]]]
-    return pts.slice(1).map((p, i): [Point, Point] => [pts[i], p])
-  }
-  if (pts.length < 2) return []
-  const [s, e] = pts
-  if (a.tool === 'rect' || a.tool === 'roundRect') {
-    const tl = { x: Math.min(s.x, e.x), y: Math.min(s.y, e.y) }
-    const br = { x: Math.max(s.x, e.x), y: Math.max(s.y, e.y) }
-    const tr = { x: br.x, y: tl.y }
-    const bl = { x: tl.x, y: br.y }
-    return [
-      [tl, tr],
-      [tr, br],
-      [br, bl],
-      [bl, tl]
-    ]
-  }
-  if (a.tool === 'ellipse') {
-    const cx = (s.x + e.x) / 2
-    const cy = (s.y + e.y) / 2
-    const rx = Math.abs(e.x - s.x) / 2
-    const ry = Math.abs(e.y - s.y) / 2
-    const n = 48
-    const ring: Point[] = []
-    for (let i = 0; i <= n; i++) {
-      const t = (i / n) * Math.PI * 2
-      ring.push({ x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t) })
-    }
-    return ring.slice(1).map((p, i): [Point, Point] => [ring[i], p])
-  }
-  return [[s, e]] // line / arrows
+const ELLIPSE_STEPS = 48
+// Same expression as the original per-check ring, computed once.
+const ELLIPSE_COS: number[] = []
+const ELLIPSE_SIN: number[] = []
+for (let i = 0; i <= ELLIPSE_STEPS; i++) {
+  const t = (i / ELLIPSE_STEPS) * Math.PI * 2
+  ELLIPSE_COS.push(Math.cos(t))
+  ELLIPSE_SIN.push(Math.sin(t))
 }
+
+/** Slack so the bounds pre-check can never reject a hit the exact test accepts. */
+const BOUNDS_EPSILON = 1e-6
 
 export function hitTest(a: Annotation, p: Point, radius: number): boolean {
   if (a.tool === 'text') {
@@ -137,9 +148,65 @@ export function hitTest(a: Annotation, p: Point, radius: number): boolean {
     const c = a.points[0]
     return Boolean(c) && Math.hypot(p.x - c.x, p.y - c.y) <= STAMP_SIZE / 2 + radius
   }
+  const pts = a.points
+  if (pts.length === 0) return false
   const reach = radius + a.width / 2
-  return outlineSegments(a).some(([s, e]) => distToSegment(p, s, e) <= reach)
+  const slack = reach + BOUNDS_EPSILON
+  const e = pointExtent(a)
+  if (
+    p.x < e.minX - slack ||
+    p.x > e.maxX + slack ||
+    p.y < e.minY - slack ||
+    p.y > e.maxY + slack
+  ) {
+    return false
+  }
+
+  if (a.tool === 'pen') {
+    if (pts.length === 1)
+      return distToSegmentXY(p.x, p.y, pts[0].x, pts[0].y, pts[0].x, pts[0].y) <= reach
+    for (let i = 1; i < pts.length; i++) {
+      if (distToSegmentXY(p.x, p.y, pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y) <= reach) {
+        return true
+      }
+    }
+    return false
+  }
+  if (pts.length < 2) return false
+  const [s, en] = pts
+  if (a.tool === 'rect' || a.tool === 'roundRect') {
+    const l = Math.min(s.x, en.x)
+    const t = Math.min(s.y, en.y)
+    const r = Math.max(s.x, en.x)
+    const b = Math.max(s.y, en.y)
+    return (
+      distToSegmentXY(p.x, p.y, l, t, r, t) <= reach ||
+      distToSegmentXY(p.x, p.y, r, t, r, b) <= reach ||
+      distToSegmentXY(p.x, p.y, r, b, l, b) <= reach ||
+      distToSegmentXY(p.x, p.y, l, b, l, t) <= reach
+    )
+  }
+  if (a.tool === 'ellipse') {
+    const cx = (s.x + en.x) / 2
+    const cy = (s.y + en.y) / 2
+    const rx = Math.abs(en.x - s.x) / 2
+    const ry = Math.abs(en.y - s.y) / 2
+    let px = cx + rx * ELLIPSE_COS[0]
+    let py = cy + ry * ELLIPSE_SIN[0]
+    for (let i = 1; i <= ELLIPSE_STEPS; i++) {
+      const nx = cx + rx * ELLIPSE_COS[i]
+      const ny = cy + ry * ELLIPSE_SIN[i]
+      if (distToSegmentXY(p.x, p.y, px, py, nx, ny) <= reach) return true
+      px = nx
+      py = ny
+    }
+    return false
+  }
+  return distToSegmentXY(p.x, p.y, s.x, s.y, en.x, en.y) <= reach // line / arrows
 }
+
+/** Undo steps kept per store. Older steps are dropped (limit: 100 steps). */
+export const MAX_HISTORY = 100
 
 /** Annotation list with undo/redo (immutable snapshots). */
 export class AnnotationStore {
@@ -147,6 +214,12 @@ export class AnnotationStore {
   private past: Annotation[][] = []
   private future: Annotation[][] = []
   private counter = 0
+  private revision = 0
+
+  /** Increments on every commit, undo and redo. Use it to invalidate caches. */
+  get version(): number {
+    return this.revision
+  }
 
   get items(): readonly Annotation[] {
     return this.present
@@ -177,8 +250,11 @@ export class AnnotationStore {
 
   private commit(next: Annotation[]): void {
     this.past.push(this.present)
+    // History is bounded to MAX_HISTORY (100) undo steps; drop the oldest.
+    if (this.past.length > MAX_HISTORY) this.past.shift()
     this.present = next
     this.future = []
+    this.revision++
   }
 
   add(input: Omit<Annotation, 'id'>): Annotation {
@@ -215,6 +291,7 @@ export class AnnotationStore {
     if (!prev) return false
     this.future.push(this.present)
     this.present = prev
+    this.revision++
     return true
   }
 
@@ -223,6 +300,7 @@ export class AnnotationStore {
     if (!next) return false
     this.past.push(this.present)
     this.present = next
+    this.revision++
     return true
   }
 }

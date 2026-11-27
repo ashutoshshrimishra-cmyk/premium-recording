@@ -163,7 +163,7 @@ export function drawAnnotation(
     } else {
       context.beginPath()
       context.moveTo(points[0].x, points[0].y)
-      for (const point of points.slice(1)) context.lineTo(point.x, point.y)
+      for (let i = 1; i < points.length; i++) context.lineTo(points[i].x, points[i].y)
       context.stroke()
     }
     context.restore()

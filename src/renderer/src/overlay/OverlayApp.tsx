@@ -14,6 +14,7 @@ import type {
   OverlayTool
 } from '../../../shared/ipc-schemas'
 import { AnnotationStore, translateAnnotation, type Point } from './annotationModel'
+import { sameLayerKey, type LayerKey } from './layerCache'
 import {
   drawAnnotation,
   drawSelection,
@@ -74,6 +75,7 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
   const storeRef = useRef<AnnotationStore | null>(null)
   const draftRef = useRef<DraftAnnotation | null>(null)
   const dragRef = useRef<DragState | null>(null)
+  const layerRef = useRef<{ canvas: HTMLCanvasElement; key: LayerKey | null } | null>(null)
   const hoverRef = useRef<Point | undefined>(undefined)
   const activePointerRef = useRef<number | null>(null)
   const frameRef = useRef<number | null>(null)
@@ -496,16 +498,52 @@ const OverlayApp = memo(function OverlayApp(): React.JSX.Element {
         canvas.height = pixelHeight
       }
 
-      context.setTransform(ratio, 0, 0, ratio, 0, 0)
-      context.clearRect(0, 0, bounds.width, bounds.height)
-
+      const store = storeRef.current
+      const items = store?.items ?? []
       const drag = dragRef.current
-      for (const annotation of storeRef.current?.items ?? []) {
+      const draggedId = drag && items.some((a) => a.id === drag.id) ? drag.id : null
+
+      // Committed annotations (minus the dragged one) are cached in an
+      // offscreen layer and re-rendered only when the cache key changes.
+      const layer = (layerRef.current ??= {
+        canvas: document.createElement('canvas'),
+        key: null
+      })
+      const key: LayerKey = {
+        version: store?.version ?? 0,
+        pixelWidth,
+        pixelHeight,
+        ratio,
+        draggedId
+      }
+      if (!sameLayerKey(layer.key, key)) {
+        if (layer.canvas.width !== pixelWidth || layer.canvas.height !== pixelHeight) {
+          layer.canvas.width = pixelWidth
+          layer.canvas.height = pixelHeight
+        }
+        const layerContext = layer.canvas.getContext('2d')
+        if (layerContext) {
+          layerContext.setTransform(1, 0, 0, 1, 0, 0)
+          layerContext.clearRect(0, 0, pixelWidth, pixelHeight)
+          layerContext.setTransform(ratio, 0, 0, ratio, 0, 0)
+          for (const annotation of items) {
+            if (annotation.id !== draggedId) drawAnnotation(layerContext, annotation)
+          }
+          layer.key = key
+        }
+      }
+
+      context.setTransform(1, 0, 0, 1, 0, 0)
+      context.clearRect(0, 0, pixelWidth, pixelHeight)
+      context.drawImage(layer.canvas, 0, 0)
+      context.setTransform(ratio, 0, 0, ratio, 0, 0)
+
+      for (const annotation of items) {
         const shown =
-          drag && drag.id === annotation.id
+          draggedId !== null && drag && drag.id === annotation.id
             ? translateAnnotation(annotation, drag.dx, drag.dy)
             : annotation
-        drawAnnotation(context, shown)
+        if (annotation.id === draggedId) drawAnnotation(context, shown)
         if (annotation.id === selectedId && tool === 'select') drawSelection(context, shown)
       }
       if (draftRef.current) drawAnnotation(context, draftRef.current)
