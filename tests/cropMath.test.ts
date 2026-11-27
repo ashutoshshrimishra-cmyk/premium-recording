@@ -3,7 +3,9 @@ import {
   regionToCapturePixels,
   displayForRegion,
   shouldFallbackDraw,
-  CROP_FALLBACK_INTERVAL_MS
+  CROP_FALLBACK_INTERVAL_MS,
+  CROP_FALLBACK_TICK_MS,
+  shouldDrawFrame
 } from '../src/renderer/src/recorder/cropMath'
 
 describe('regionToCapturePixels', () => {
@@ -59,5 +61,31 @@ describe('shouldFallbackDraw', () => {
     expect(shouldFallbackDraw(1100, 1000, 250)).toBe(false)
     expect(shouldFallbackDraw(1250, 1000, 250)).toBe(true)
     expect(CROP_FALLBACK_INTERVAL_MS).toBe(250)
+  })
+})
+
+describe('shouldDrawFrame', () => {
+  it('skips frames that arrive sooner than the target interval', () => {
+    // 60 fps source, 30 fps target: every other frame is skipped
+    expect(shouldDrawFrame(1016.7, 1000, 30)).toBe(false)
+    expect(shouldDrawFrame(1033.4, 1000, 30)).toBe(true)
+  })
+  it('does not halve a 60 fps source at a 60 fps target because of jitter', () => {
+    expect(shouldDrawFrame(1015.5, 1000, 60)).toBe(true)
+    expect(shouldDrawFrame(1008, 1000, 60)).toBe(false)
+  })
+  it('draws when fps is invalid', () => {
+    expect(shouldDrawFrame(1001, 1000, 0)).toBe(true)
+  })
+})
+
+describe('fallback watchdog tick', () => {
+  it('ticks at half the interval so a static source gets a draw every interval', () => {
+    expect(CROP_FALLBACK_TICK_MS).toBe(CROP_FALLBACK_INTERVAL_MS / 2)
+    // a tick just short of the interval is skipped, the next one still lands within 1.5 intervals
+    expect(shouldFallbackDraw(1249, 1000, CROP_FALLBACK_INTERVAL_MS)).toBe(false)
+    expect(shouldFallbackDraw(1249 + CROP_FALLBACK_TICK_MS, 1000, CROP_FALLBACK_INTERVAL_MS)).toBe(
+      true
+    )
   })
 })

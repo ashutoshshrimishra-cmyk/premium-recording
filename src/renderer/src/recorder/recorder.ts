@@ -16,7 +16,9 @@ import {
 import { computeBitrate } from './bitrate'
 import {
   CROP_FALLBACK_INTERVAL_MS,
+  CROP_FALLBACK_TICK_MS,
   fractionToPixels,
+  shouldDrawFrame,
   shouldFallbackDraw,
   type RegionFraction
 } from './cropMath'
@@ -661,14 +663,14 @@ export class ScreenRecorder {
     if (typeof frameVideo.requestVideoFrameCallback === 'function') {
       const onFrame = (): void => {
         if (this.cropVideo !== video) return
-        draw()
+        if (shouldDrawFrame(performance.now(), lastDrawAt, fps)) draw()
         this.cropFrameHandle = frameVideo.requestVideoFrameCallback(onFrame)
       }
       this.cropFrameHandle = frameVideo.requestVideoFrameCallback(onFrame)
       // A static source delivers no new frames, so redraw occasionally to keep the output track alive.
       this.cropTimer = setInterval(() => {
         if (shouldFallbackDraw(performance.now(), lastDrawAt, CROP_FALLBACK_INTERVAL_MS)) draw()
-      }, CROP_FALLBACK_INTERVAL_MS)
+      }, CROP_FALLBACK_TICK_MS)
     } else {
       this.cropTimer = setInterval(draw, Math.max(8, Math.round(1000 / fps)))
     }

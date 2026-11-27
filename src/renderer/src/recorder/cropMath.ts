@@ -79,3 +79,16 @@ export const CROP_FALLBACK_INTERVAL_MS = 250
 export function shouldFallbackDraw(now: number, lastDrawAt: number, intervalMs: number): boolean {
   return now - lastDrawAt >= intervalMs
 }
+
+/** How often the watchdog checks. Half the interval, so a tick never lands just short of it and skips a whole cycle. */
+export const CROP_FALLBACK_TICK_MS = CROP_FALLBACK_INTERVAL_MS / 2
+
+/** Fraction of the frame interval a frame may arrive early and still be drawn, absorbing timing jitter. */
+const FRAME_INTERVAL_TOLERANCE = 0.1
+
+/** True when a new source frame should be drawn, capping draws at the target fps. */
+export function shouldDrawFrame(now: number, lastDrawAt: number, fps: number): boolean {
+  if (!(fps > 0)) return true
+  const minInterval = (1000 / fps) * (1 - FRAME_INTERVAL_TOLERANCE)
+  return now - lastDrawAt >= minInterval
+}
