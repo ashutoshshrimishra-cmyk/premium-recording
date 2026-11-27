@@ -71,3 +71,11 @@ export function fractionToPixels(
   const height = Math.max(2, Math.min(Math.round(norm.height * frameHeight), frameHeight - y) & ~1)
   return { x, y, width, height }
 }
+
+/** How often a static source is redrawn so the canvas output track keeps delivering frames. */
+export const CROP_FALLBACK_INTERVAL_MS = 250
+
+/** True when nothing has been drawn for a full fallback interval. */
+export function shouldFallbackDraw(now: number, lastDrawAt: number, intervalMs: number): boolean {
+  return now - lastDrawAt >= intervalMs
+}

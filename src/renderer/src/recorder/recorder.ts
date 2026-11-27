@@ -14,7 +14,13 @@ import {
   type ProbeOutcome
 } from './mimeSelect'
 import { computeBitrate } from './bitrate'
-import { fractionToPixels, type RegionFraction } from './cropMath'
+import {
+  CROP_FALLBACK_INTERVAL_MS,
+  fractionToPixels,
+  shouldFallbackDraw,
+  type RegionFraction
+} from './cropMath'
+import { PROBE_BYTE_LIMIT, probeSlice } from './probeBytes'
 import { sourceKindOf } from '../../../shared/sourceId'
 import { detectAudioTrack } from '../../../shared/containerProbe'
 import { createEmptyDiagnostics, type RecordingDiagnostics } from './diagnostics'
@@ -69,6 +75,7 @@ export class ScreenRecorder {
   private removeMicListener?: () => void
   private micStateTimer?: ReturnType<typeof setInterval>
   private cropTimer?: ReturnType<typeof setInterval>
+  private cropFrameHandle?: number
   private cropVideo?: HTMLVideoElement
   private cropSource?: MediaStream
 
@@ -284,6 +291,12 @@ export class ScreenRecorder {
         (error) => {
           this.callbacks.onError(`Chunk write failed: ${error.message}`)
           void this.stop()
+        },
+        {
+          onWarning: () =>
+            this.warn(
+              'Disk writes are falling behind. The recording may stop if the disk stays slow; close other heavy programs or pick a faster drive.'
+            )
         }
       )
 
@@ -486,8 +499,8 @@ export class ScreenRecorder {
       await sleep(PROBE_DURATION_MS)
       if (recorder.state !== 'inactive') recorder.stop()
       await Promise.race([stopped, sleep(1500)])
-      const bytes = new Uint8Array(await new Blob(parts).arrayBuffer())
-      return detectAudioTrack(bytes.subarray(0, 256 * 1024), mime)
+      const bytes = new Uint8Array(await probeSlice(parts, PROBE_BYTE_LIMIT).arrayBuffer())
+      return detectAudioTrack(bytes, mime)
     } catch {
       return 'error'
     }
@@ -586,6 +599,10 @@ export class ScreenRecorder {
   private disposeCrop(): void {
     if (this.cropTimer) clearInterval(this.cropTimer)
     this.cropTimer = undefined
+    if (this.cropFrameHandle !== undefined) {
+      this.cropVideo?.cancelVideoFrameCallback?.(this.cropFrameHandle)
+      this.cropFrameHandle = undefined
+    }
     this.cropSource?.getTracks().forEach((track) => track.stop())
     this.cropSource = undefined
     if (this.cropVideo) {
@@ -624,7 +641,9 @@ export class ScreenRecorder {
     canvas.height = crop.height
     const context = canvas.getContext('2d', { alpha: false })
     if (!context) throw new Error('Could not prepare the region crop')
+    let lastDrawAt = performance.now()
     const draw = (): void => {
+      lastDrawAt = performance.now()
       context.drawImage(
         video,
         crop.x,
@@ -638,7 +657,21 @@ export class ScreenRecorder {
       )
     }
     draw()
-    this.cropTimer = setInterval(draw, Math.max(8, Math.round(1000 / fps)))
+    const frameVideo = video as VideoFrameCallbackVideo
+    if (typeof frameVideo.requestVideoFrameCallback === 'function') {
+      const onFrame = (): void => {
+        if (this.cropVideo !== video) return
+        draw()
+        this.cropFrameHandle = frameVideo.requestVideoFrameCallback(onFrame)
+      }
+      this.cropFrameHandle = frameVideo.requestVideoFrameCallback(onFrame)
+      // A static source delivers no new frames, so redraw occasionally to keep the output track alive.
+      this.cropTimer = setInterval(() => {
+        if (shouldFallbackDraw(performance.now(), lastDrawAt, CROP_FALLBACK_INTERVAL_MS)) draw()
+      }, CROP_FALLBACK_INTERVAL_MS)
+    } else {
+      this.cropTimer = setInterval(draw, Math.max(8, Math.round(1000 / fps)))
+    }
     const output = canvas.captureStream(fps)
     const sourceTrack = source.getVideoTracks()[0]
     if (sourceTrack) {

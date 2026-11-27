@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { regionToCapturePixels, displayForRegion } from '../src/renderer/src/recorder/cropMath'
+import {
+  regionToCapturePixels,
+  displayForRegion,
+  shouldFallbackDraw,
+  CROP_FALLBACK_INTERVAL_MS
+} from '../src/renderer/src/recorder/cropMath'
 
 describe('regionToCapturePixels', () => {
   it('scales by DPI at 150%', () => {
@@ -46,5 +51,13 @@ describe('displayForRegion', () => {
       { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 } }
     ]
     expect(displayForRegion({ x: 2000, y: 100, width: 200, height: 200 }, ds)?.id).toBe(2)
+  })
+})
+
+describe('shouldFallbackDraw', () => {
+  it('draws only after a full idle interval', () => {
+    expect(shouldFallbackDraw(1100, 1000, 250)).toBe(false)
+    expect(shouldFallbackDraw(1250, 1000, 250)).toBe(true)
+    expect(CROP_FALLBACK_INTERVAL_MS).toBe(250)
   })
 })
