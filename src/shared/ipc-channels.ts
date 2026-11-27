@@ -36,5 +36,9 @@ export const IPC_CHANNELS = {
   recentList: 'recent-list',
   recentAdd: 'recent-add',
   recentOpen: 'recent-open',
-  recentShow: 'recent-show'
+  recentShow: 'recent-show',
+  recoveryList: 'recovery-list',
+  recoveryRecover: 'recovery-recover',
+  recoveryShow: 'recovery-show',
+  recoveryDiscard: 'recovery-discard'
 } as const

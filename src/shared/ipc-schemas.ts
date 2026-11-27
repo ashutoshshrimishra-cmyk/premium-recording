@@ -60,6 +60,18 @@ export const recentAddInputSchema = z.object({
 export const recentPathInputSchema = z.object({ filePath: z.string().min(1) })
 export const recentActionOutputSchema = z.boolean()
 
+export const abandonedPartSchema = z.object({
+  partPath: z.string().min(1),
+  sizeBytes: z.number().nonnegative(),
+  modifiedAt: z.string(),
+  suggestedFinalPath: z.string().min(1)
+})
+export const recoveryListInputSchema = z.void()
+export const recoveryListOutputSchema = z.array(abandonedPartSchema)
+export const recoveryPathInputSchema = z.object({ partPath: z.string().min(1) })
+export const recoveryRecoverOutputSchema = z.object({ filePath: z.string().min(1) })
+export const recoveryDiscardOutputSchema = z.boolean()
+
 export const getSourcesInputSchema = z.object({ kind: z.enum(['screen', 'window']) })
 export const getSourcesOutputSchema = z.array(
   z.object({
@@ -269,6 +281,7 @@ export type ShortcutsConfig = z.infer<typeof shortcutsSchema>
 export type ShortcutFailure = z.infer<typeof shortcutFailureSchema>
 export type ShortcutsResult = z.infer<typeof shortcutsResultSchema>
 export type ShortcutActionEvent = z.infer<typeof shortcutActionEventSchema>
+export type AbandonedPart = z.infer<typeof abandonedPartSchema>
 export type RecentRecording = z.infer<typeof recentRecordingSchema>
 export type GetSourcesInput = z.infer<typeof getSourcesInputSchema>
 export type GetSourcesOutput = z.infer<typeof getSourcesOutputSchema>

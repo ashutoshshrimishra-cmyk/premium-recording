@@ -15,6 +15,10 @@ export function getLastSavedRecordingPath(): string | undefined {
 }
 let streamError: Error | undefined
 
+export function getActiveTempPath(): string | undefined {
+  return activeTempPath
+}
+
 export function setSelectedSourceId(sourceId: string): void {
   selectedSourceId = sourceId
 }
@@ -159,7 +163,10 @@ function clearActiveRecording(): void {
   streamError = undefined
 }
 
-async function finalizeWithoutOverwrite(tempPath: string, desiredPath: string): Promise<string> {
+export async function finalizeWithoutOverwrite(
+  tempPath: string,
+  desiredPath: string
+): Promise<string> {
   const extension = extname(desiredPath)
   const stem = desiredPath.slice(0, -extension.length)
   for (let attempt = 0; attempt < 1000; attempt += 1) {
@@ -185,6 +192,18 @@ async function finalizeWithoutOverwrite(tempPath: string, desiredPath: string): 
     }
   }
   throw new Error('Could not finalize a unique recording filename')
+}
+
+/** Thrown when finalizing fails. The partial recording is kept at preservedPath. */
+export class RecordingSaveError extends Error {
+  readonly preservedPath: string
+  constructor(cause: unknown, preservedPath: string) {
+    const reason = cause instanceof Error ? cause.message : String(cause)
+    super(`${reason}. The partial recording was kept at ${preservedPath}`)
+    this.name = 'RecordingSaveError'
+    this.preservedPath = preservedPath
+    this.cause = cause
+  }
 }
 
 export async function stopRecordingFile(mimeType: string, discard = false): Promise<string> {
@@ -215,8 +234,15 @@ export async function stopRecordingFile(mimeType: string, discard = false): Prom
     lastSavedPath = await finalizeWithoutOverwrite(tempPath, finalPath)
     return lastSavedPath
   } catch (error) {
-    if (!discard) await unlink(tempPath).catch(() => undefined)
-    throw error
+    if (discard || error instanceof RecordingSaveError) throw error
+    // Keep the .part on failure so the data can be recovered. Only an explicit
+    // discard or an empty file is deleted (both handled above).
+    const kept = await stat(tempPath).then(
+      () => true,
+      () => false
+    )
+    if (!kept || (error as Error).message.startsWith('Recording produced no data')) throw error
+    throw new RecordingSaveError(error, tempPath)
   } finally {
     clearActiveRecording()
   }

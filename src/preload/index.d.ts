@@ -25,6 +25,7 @@ import type {
   PanelSetLayoutInput,
   DiagnosticsInfo,
   DiagnosticsProbeFileOutput,
+  AbandonedPart,
   RecentRecording,
   ShortcutActionEvent,
   ShortcutsConfig,
@@ -67,6 +68,10 @@ interface RecorderApi {
   recentAdd(filePath: string, durationMs: number): Promise<RecentRecording[]>
   recentOpen(filePath: string): Promise<boolean>
   recentShow(filePath: string): Promise<boolean>
+  recoveryList(): Promise<AbandonedPart[]>
+  recoveryRecover(partPath: string): Promise<{ filePath: string }>
+  recoveryShow(partPath: string): Promise<boolean>
+  recoveryDiscard(partPath: string): Promise<boolean>
   onOverlayCursor(callback: (cursor: OverlayCursor) => void): () => void
   onOverlayClick(callback: (click: OverlayClick) => void): () => void
   onOverlayInteractiveChanged(callback: (interactive: boolean) => void): () => void

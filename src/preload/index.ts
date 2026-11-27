@@ -27,6 +27,7 @@ import type {
   PanelSetLayoutInput,
   DiagnosticsInfo,
   DiagnosticsProbeFileOutput,
+  AbandonedPart,
   RecentRecording,
   ShortcutActionEvent,
   ShortcutsConfig,
@@ -139,6 +140,14 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.recentOpen, { filePath }),
   recentShow: (filePath: string): Promise<boolean> =>
     ipcRenderer.invoke(IPC_CHANNELS.recentShow, { filePath }),
+  recoveryList: (): Promise<AbandonedPart[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryList, undefined),
+  recoveryRecover: (partPath: string): Promise<{ filePath: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryRecover, { partPath }),
+  recoveryShow: (partPath: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryShow, { partPath }),
+  recoveryDiscard: (partPath: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryDiscard, { partPath }),
   onOverlayInteractiveChanged: (callback: (interactive: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, interactive: boolean): void =>
       callback(interactive)

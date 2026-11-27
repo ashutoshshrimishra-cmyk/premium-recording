@@ -71,6 +71,11 @@ import {
   recentAddInputSchema,
   recentPathInputSchema,
   recentActionOutputSchema,
+  recoveryListInputSchema,
+  recoveryListOutputSchema,
+  recoveryPathInputSchema,
+  recoveryRecoverOutputSchema,
+  recoveryDiscardOutputSchema,
   type RecentRecording,
   type Settings,
   type ShortcutFailure,
@@ -92,11 +97,13 @@ import { BUILD_COMMIT } from '../buildInfo'
 import {
   appendRecordingChunk,
   discardActiveRecording,
+  getActiveTempPath,
   getLastSavedRecordingPath,
   setSelectedSourceId,
   startRecordingFile,
   stopRecordingFile
 } from '../recording'
+import { deletePart, isRecoverablePartPath, listAbandonedParts, recoverPart } from '../recovery'
 import {
   closeAnnotationOverlay,
   forwardOverlayCommand,
@@ -388,6 +395,41 @@ export function registerIpc(): void {
     validateSender(event)
     shell.showItemInFolder(recentPath(input))
     return recentActionOutputSchema.parse(true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recoveryList, async (event, input: unknown) => {
+    validateSender(event)
+    recoveryListInputSchema.parse(input)
+    return recoveryListOutputSchema.parse(
+      await listAbandonedParts(readSettings().saveDir, getActiveTempPath())
+    )
+  })
+
+  const recoveryPath = (input: unknown): string => {
+    if (activeSession) throw new Error('Cannot recover files while a recording is in progress')
+    const { partPath } = recoveryPathInputSchema.parse(input)
+    if (!isRecoverablePartPath(readSettings().saveDir, partPath)) {
+      throw new Error('That file is not a recoverable recording in the save folder')
+    }
+    return partPath
+  }
+
+  ipcMain.handle(IPC_CHANNELS.recoveryRecover, async (event, input: unknown) => {
+    validateSender(event)
+    const filePath = await recoverPart(recoveryPath(input))
+    return recoveryRecoverOutputSchema.parse({ filePath })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recoveryShow, (event, input: unknown) => {
+    validateSender(event)
+    shell.showItemInFolder(recoveryPath(input))
+    return recoveryDiscardOutputSchema.parse(true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.recoveryDiscard, async (event, input: unknown) => {
+    validateSender(event)
+    await deletePart(recoveryPath(input))
+    return recoveryDiscardOutputSchema.parse(true)
   })
 
   ipcMain.handle(IPC_CHANNELS.recordingSelectSource, (event, input: unknown) => {

@@ -212,3 +212,19 @@ describe('settings backward compatibility', () => {
     expect(setSettingsInputSchema.parse(once)).toEqual(once)
   })
 })
+
+describe('recovery schemas', () => {
+  it('accepts valid payloads and rejects empty paths', async () => {
+    const s = await import('../src/shared/ipc-schemas')
+    expect(s.recoveryPathInputSchema.parse({ partPath: 'a.mp4.part' })).toEqual({
+      partPath: 'a.mp4.part'
+    })
+    expect(() => s.recoveryPathInputSchema.parse({ partPath: '' })).toThrow()
+    expect(() => s.recoveryPathInputSchema.parse({})).toThrow()
+    expect(s.recoveryListOutputSchema.parse([])).toEqual([])
+    expect(() => s.recoveryListOutputSchema.parse([{ partPath: 'x' }])).toThrow()
+    expect(s.recoveryRecoverOutputSchema.parse({ filePath: 'a.mp4' })).toEqual({
+      filePath: 'a.mp4'
+    })
+  })
+})

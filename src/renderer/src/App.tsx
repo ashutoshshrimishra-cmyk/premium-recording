@@ -8,6 +8,7 @@ import { NoiseToggle } from './app/NoiseToggle'
 import { SaveLocation } from './app/SaveLocation'
 import { SettingsView } from './app/SettingsView'
 import { RecentRecordings } from './app/RecentRecordings'
+import { RecoveryBanner } from './app/RecoveryBanner'
 import { StartButton } from './app/StartButton'
 import { useRecorderStore } from './app/store'
 
@@ -39,6 +40,7 @@ const App = memo(function App(): React.JSX.Element {
             <div className="my-4 h-px bg-[var(--border)]" />
             <NoiseToggle />
             <div className="mt-auto">
+              <RecoveryBanner />
               <RecentRecordings />
               <SaveLocation />
               <StartButton />
