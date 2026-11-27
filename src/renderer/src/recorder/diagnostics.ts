@@ -102,7 +102,7 @@ export function formatDiagnostics(d: RecordingDiagnostics): string[] {
     }
     if (a.fileHasAudio !== 'pending') {
       lines.push(
-        `Saved file has audio: ${a.fileHasAudio === 'yes' ? 'yes' : a.fileHasAudio === 'no' ? 'NO' : 'unknown'}`
+        `Saved file has audio: ${a.fileHasAudio === 'yes' ? 'yes' : a.fileHasAudio === 'no' ? 'NO' : 'not verified (could not confirm)'}`
       )
     }
   }

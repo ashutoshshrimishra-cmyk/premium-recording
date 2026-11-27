@@ -1,6 +1,13 @@
 import { RecordingChunkWriter } from './chunkWriter'
 import { openMicrophone, type MicrophoneChain } from './microphone'
 import {
+  chunkWriteFailureMessage,
+  openMicrophoneWithFallback,
+  shouldDiscardOnWriteError,
+  type MicChoice,
+  type MicFailure
+} from './micFallback'
+import {
   DEFAULT_MAX_PROBES,
   DEFAULT_PROBE_BUDGET_MS,
   buildMimeCandidates,
@@ -77,6 +84,7 @@ export class ScreenRecorder {
     audioDeviceId: string
     noiseSuppression: boolean
     region?: RegionFraction
+    onMicFailure?: (failure: MicFailure) => Promise<MicChoice>
   }): Promise<void> {
     this.stopped = false
     this.finishing = false
@@ -144,14 +152,35 @@ export class ScreenRecorder {
 
     let microphone: MicrophoneChain | undefined
     if (options.audioDeviceId !== 'none') {
-      try {
-        microphone = await openMicrophone({
+      const open = (): Promise<MicrophoneChain> =>
+        openMicrophone({
           deviceId: options.audioDeviceId,
           noiseSuppression: options.noiseSuppression
         })
+      let videoOnlyReason = ''
+      try {
+        if (options.onMicFailure) {
+          const ask = options.onMicFailure
+          const result = await openMicrophoneWithFallback(
+            open,
+            (failure) => {
+              videoOnlyReason = failure.message
+              return ask(failure)
+            },
+            () => this.stopped
+          )
+          microphone = result.microphone
+          if (result.videoOnly) {
+            this.diagnostics.audio.requested = false
+            this.warn(`Recording without audio: ${videoOnlyReason}`)
+          }
+        } else {
+          microphone = await open()
+        }
       } catch (error) {
         displayStream.getTracks().forEach((track) => track.stop())
         this.cleanup()
+        if (error instanceof Error && error.message === 'Recording was cancelled') throw error
         const detail = error instanceof Error ? error.message : String(error)
         throw new Error(`Could not use the selected microphone: ${detail}`, { cause: error })
       }
@@ -170,7 +199,7 @@ export class ScreenRecorder {
       ...(microphone ? [microphone.track] : [])
     ])
     this.stream = stream
-    if (options.audioDeviceId !== 'none' && stream.getAudioTracks().length === 0) {
+    if (this.diagnostics.audio.requested && stream.getAudioTracks().length === 0) {
       this.stopTracks()
       this.cleanup()
       throw new Error(
@@ -496,18 +525,22 @@ export class ScreenRecorder {
         const result = await window.api.recordingStop({
           sessionId: this.sessionId,
           mimeType,
-          discard: Boolean(chunkWriteError)
+          discard: chunkWriteError ? shouldDiscardOnWriteError() : false
         })
-        if (!chunkWriteError) {
+        if (chunkWriteError) {
+          this.callbacks.onError(chunkWriteFailureMessage(chunkWriteError, result.filePath))
+        } else {
           this.callbacks.onFile(result.filePath)
           await this.verifySavedFile(result.filePath)
         }
       } catch (error) {
-        if (!chunkWriteError) {
-          this.callbacks.onError(
-            error instanceof Error ? error.message : 'Could not close the recording'
-          )
-        }
+        this.callbacks.onError(
+          chunkWriteError
+            ? chunkWriteFailureMessage(chunkWriteError)
+            : error instanceof Error
+              ? error.message
+              : 'Could not close the recording'
+        )
       }
     }
     this.cleanup()

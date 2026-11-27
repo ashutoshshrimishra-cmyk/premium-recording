@@ -5,6 +5,7 @@ import { ScreenRecorder } from '../recorder/recorder'
 import { formatDiagnostics, type RecordingDiagnostics } from '../recorder/diagnostics'
 import { runCountdown } from '../recorder/countdown'
 import { showShortcut } from './platform'
+import type { MicChoice, MicFailure } from '../recorder/micFallback'
 
 type RecorderStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -36,6 +37,8 @@ export const StartButton = memo(function StartButton() {
   const [logPath, setLogPath] = useState('')
   const [panelInVideo, setPanelInVideo] = useState(false)
   const [countdown, setCountdown] = useState<number | null>(null)
+  const [micPrompt, setMicPrompt] = useState<MicFailure | undefined>(undefined)
+  const micResolveRef = useRef<((choice: MicChoice) => void) | undefined>(undefined)
 
   useEffect(() => {
     void window.api
@@ -53,6 +56,7 @@ export const StartButton = memo(function StartButton() {
   useEffect(
     () => () => {
       if (timerRef.current) clearInterval(timerRef.current)
+      micResolveRef.current?.('cancel')
       void recorderRef.current?.stop()
     },
     []
@@ -75,6 +79,13 @@ export const StartButton = memo(function StartButton() {
   const updateElapsed = (): void => {
     const activeMs = statusRef.current === 'recording' ? Date.now() - activeStartedAtRef.current : 0
     setElapsed(Math.floor((accumulatedMsRef.current + activeMs) / 1000))
+  }
+
+  const answerMic = (choice: MicChoice): void => {
+    const resolve = micResolveRef.current
+    micResolveRef.current = undefined
+    setMicPrompt(undefined)
+    resolve?.(choice)
   }
 
   const start = async (): Promise<void> => {
@@ -125,12 +136,18 @@ export const StartButton = memo(function StartButton() {
         saveDir,
         audioDeviceId,
         noiseSuppression,
-        region: captureMode === 'region' ? region : undefined
+        region: captureMode === 'region' ? region : undefined,
+        onMicFailure: (failure) =>
+          new Promise<MicChoice>((resolve) => {
+            micResolveRef.current = resolve
+            setMicPrompt(failure)
+          })
       })
       timerRef.current = setInterval(updateElapsed, 250)
       startingRef.current = false
     } catch (error) {
       startingRef.current = false
+      answerMic('cancel')
       recorderRef.current = undefined
       statusRef.current = 'idle'
       setStatus('idle')
@@ -170,7 +187,10 @@ export const StartButton = memo(function StartButton() {
     countdownCancelled.current = true
   }
 
-  const stop = (): void => void recorderRef.current?.stop()
+  const stop = (): void => {
+    answerMic('cancel')
+    void recorderRef.current?.stop()
+  }
   const pause = (): void => recorderRef.current?.pause()
   const resume = (): void => recorderRef.current?.resume()
   const sourceMatchesMode =
@@ -284,6 +304,38 @@ export const StartButton = memo(function StartButton() {
           >
             Open log folder
           </button>
+        </div>
+      )}
+      {micPrompt && (
+        <div
+          role="alertdialog"
+          aria-label="Microphone problem"
+          className="mb-2 rounded-lg border border-red-500/60 px-3 py-2 text-xs"
+        >
+          <p className="mb-2 text-red-400">{micPrompt.message}</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => answerMic('retry')}
+              className="rounded border border-[var(--border)] px-2 py-1"
+            >
+              Try again
+            </button>
+            <button
+              type="button"
+              onClick={() => answerMic('video-only')}
+              className="rounded border border-[var(--border)] px-2 py-1"
+            >
+              Record without audio
+            </button>
+            <button
+              type="button"
+              onClick={() => answerMic('cancel')}
+              className="rounded border border-[var(--border)] px-2 py-1"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
       {message && (
